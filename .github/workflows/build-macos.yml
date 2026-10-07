@@ -1,0 +1,55 @@
+name: Build macOS
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  GODOT_VERSION: 4.7.2
+
+jobs:
+  macos:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Godot and export templates
+        working-directory: ${{ runner.temp }}
+        run: |
+          base=https://github.com/godotengine/godot/releases/download/${GODOT_VERSION}-stable
+          wget -q "$base/Godot_v${GODOT_VERSION}-stable_linux.x86_64.zip"
+          wget -q "$base/Godot_v${GODOT_VERSION}-stable_export_templates.tpz"
+          unzip -q "Godot_v${GODOT_VERSION}-stable_linux.x86_64.zip"
+          unzip -q "Godot_v${GODOT_VERSION}-stable_export_templates.tpz"
+          mkdir -p ~/.local/share/godot/export_templates
+          mv templates ~/.local/share/godot/export_templates/${GODOT_VERSION}.stable
+          echo "GODOT=$PWD/Godot_v${GODOT_VERSION}-stable_linux.x86_64" >> "$GITHUB_ENV"
+
+      - name: Export universal macOS app (Apple Silicon + Intel)
+        run: |
+          mkdir -p build
+          "$GODOT" --headless --import || true
+          "$GODOT" --headless --export-release "macOS" build/Earthworks-macOS.zip
+          ls -lh build
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Earthworks-macOS
+          path: build/Earthworks-macOS.zip
+
+      - name: Attach to release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: build/Earthworks-macOS.zip
+          body: |
+            Earthworks ${{ github.ref_name }} for macOS (universal: Apple Silicon and Intel).
+
+            The app is not notarized by Apple. After unzipping, either right-click Earthworks.app → Open,
+            or run this once in Terminal from the folder you unzipped it to:
+
+                xattr -cr Earthworks.app
