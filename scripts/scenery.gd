@@ -5,6 +5,8 @@ extends RefCounted
 ## office, lunch room, fuel station, material bays, container yard, wash bay, parking
 ## bays, parked pickups and roller, scaffolding, light towers and site clutter.
 
+const Kit = preload("res://scripts/model_kit.gd")
+
 const ForestTree = preload("res://scripts/tree.gd")
 const Terrain = preload("res://scripts/terrain.gd")
 
@@ -15,6 +17,14 @@ const STATIC_LAYER := 32  # solid site buildings block machines like stumps do
 ## Half-size of the depot yard (x, z), and the material bays (relative to its centre).
 const ZONE_HALF := Vector2(36, 26)
 const BAYS: Array[Vector2] = [Vector2(-31, -14), Vector2(-25, -14), Vector2(-19, -14)]
+const GATE_HALF := 14.0  # the gate opening is 28 m wide
+const ROAD_HALF := Vector2(11.0, 16.0)  # haul road out of the gate
+## Parking bays new machines are delivered to (depot space, facing the gate).
+const SPAWN_BAYS: Array[Vector2] = [Vector2(-6.0, 11.0), Vector2(1.5, 11.0), Vector2(9.0, 11.0), Vector2(16.5, 11.0),
+	Vector2(24.0, 11.0), Vector2(-6.0, -2.5), Vector2(1.5, -2.5), Vector2(9.0, -2.5), Vector2(16.5, -2.5)]
+const BAY_WIDTH := 7.5
+## Trailer bays (east-west, along the south side of the fuel station).
+const TRAILER_BAYS: Array[Vector2] = [Vector2(22, -19.5), Vector2(22, -23.2)]
 
 static var _materials := {}
 
@@ -37,7 +47,7 @@ static func pine_mesh(foliage: Color) -> ArrayMesh:
 	var mesh := ArrayMesh.new()
 	_merge_surface(mesh, [[trunk, Vector3(0, 0.8, 0)]], Color(0.4, 0.26, 0.16))
 	_merge_surface(mesh, cones, foliage)
-	return mesh
+	return Kit.flatten_plain(mesh)
 
 
 static func broadleaf_mesh(foliage: Color) -> ArrayMesh:
@@ -57,7 +67,56 @@ static func broadleaf_mesh(foliage: Color) -> ArrayMesh:
 	var mesh := ArrayMesh.new()
 	_merge_surface(mesh, [[trunk, Vector3(0, 1.3, 0)]], Color(0.42, 0.28, 0.17))
 	_merge_surface(mesh, blobs, foliage)
-	return mesh
+	return Kit.flatten_plain(mesh)
+
+
+## Swamp cypress: a tall, buttressed grey trunk with flat, layered olive crowns.
+static func cypress_mesh() -> ArrayMesh:
+	var trunk := CylinderMesh.new()
+	trunk.top_radius = 0.16
+	trunk.bottom_radius = 0.42
+	trunk.height = 4.2
+	trunk.radial_segments = 9
+	var flare := CylinderMesh.new()
+	flare.top_radius = 0.3
+	flare.bottom_radius = 0.75
+	flare.height = 0.8
+	flare.radial_segments = 9
+	var layers: Array = []
+	for c in [[1.7, 0.55, 3.0], [1.5, 0.5, 3.9], [1.2, 0.45, 4.7], [0.8, 0.4, 5.4]]:
+		var disc := CylinderMesh.new()
+		disc.top_radius = c[0] * 0.75
+		disc.bottom_radius = c[0]
+		disc.height = c[1]
+		disc.radial_segments = 10
+		disc.rings = 1
+		layers.append([disc, Vector3(0, c[2], 0)])
+	var mesh := ArrayMesh.new()
+	_merge_surface(mesh, [[trunk, Vector3(0, 2.1, 0)], [flare, Vector3(0, 0.4, 0)]], Color(0.48, 0.44, 0.38))
+	_merge_surface(mesh, layers, Color(0.36, 0.42, 0.24))
+	return Kit.flatten_plain(mesh)
+
+
+## Giant oak: a thick, short trunk and a wide, lumpy crown.
+static func oak_mesh() -> ArrayMesh:
+	var trunk := CylinderMesh.new()
+	trunk.top_radius = 0.32
+	trunk.bottom_radius = 0.5
+	trunk.height = 3.0
+	trunk.radial_segments = 10
+	var blobs: Array = []
+	for b in [[2.0, Vector3(0, 4.0, 0)], [1.5, Vector3(1.4, 3.6, 0.4)], [1.4, Vector3(-1.3, 3.7, -0.5)],
+			[1.3, Vector3(0.3, 3.6, 1.4)], [1.2, Vector3(-0.2, 3.5, -1.5)], [1.2, Vector3(0.1, 5.1, 0.2)]]:
+		var blob := SphereMesh.new()
+		blob.radius = b[0]
+		blob.height = b[0] * 1.6
+		blob.radial_segments = 10
+		blob.rings = 5
+		blobs.append([blob, b[1]])
+	var mesh := ArrayMesh.new()
+	_merge_surface(mesh, [[trunk, Vector3(0, 1.5, 0)]], Color(0.36, 0.26, 0.17))
+	_merge_surface(mesh, blobs, Color(0.3, 0.45, 0.2))
+	return Kit.flatten_plain(mesh)
 
 
 ## Scatters destructible trees in a circle, skipping spots `avoid(Vector2)` rejects.
@@ -105,41 +164,49 @@ static func tree_ring(parent: Node3D, inner: float, outer: float, count: int) ->
 			gold_spots.append(xform)
 		else:
 			spots.append(xform)
+	# Tiled so the renderer (and each shadow cascade) can skip the parts out of view.
 	for pair in [[green, spots], [golden, gold_spots]]:
-		var mm := MultiMesh.new()
-		mm.transform_format = MultiMesh.TRANSFORM_3D
-		mm.mesh = pair[0]
-		var xforms: Array[Transform3D] = pair[1]
-		mm.instance_count = xforms.size()
-		for i in xforms.size():
-			mm.set_instance_transform(i, xforms[i])
-		var instance := MultiMeshInstance3D.new()
-		instance.multimesh = mm
-		parent.add_child(instance)
+		var tiles := {}
+		for xform in pair[1]:
+			var key := Vector2i(floori(xform.origin.x / 32.0), floori(xform.origin.z / 32.0))
+			if not tiles.has(key):
+				tiles[key] = []
+			tiles[key].append(xform)
+		for key in tiles:
+			var xforms: Array = tiles[key]
+			var mm := MultiMesh.new()
+			mm.transform_format = MultiMesh.TRANSFORM_3D
+			mm.mesh = pair[0]
+			mm.instance_count = xforms.size()
+			for i in xforms.size():
+				mm.set_instance_transform(i, xforms[i])
+			var instance := MultiMeshInstance3D.new()
+			instance.multimesh = mm
+			parent.add_child(instance)
 
 
 ## Shapes the ground for the depot (call before terrain.finalize()); returns the pad height.
 static func prepare_zone(terrain: Terrain, center: Vector2) -> float:
 	var level := terrain.flatten(center, ZONE_HALF, 8.0)
 	terrain.paint_gravel(center, ZONE_HALF + Vector2(1.5, 1.5))
-	# Haul road out of the gate.
-	var road := center + Vector2(0, -ZONE_HALF.y - 12.0)
-	terrain.flatten(road, Vector2(5.0, 12.0), 5.0, level)
-	terrain.paint_gravel(road, Vector2(4.5, 12.0))
-	# Stockpiles in the material bays, plus a soil heap by the parking row for loading practice.
-	for bay in BAYS:
-		var pile := center + bay + Vector2(0, 0.4)
-		terrain.add_mound(pile, 2.4, 1.8)
-		terrain.mark_disturbed(pile, 2.4)
-	var heap := center + Vector2(-8, -9)
-	terrain.add_mound(heap, 4.0, 2.2)
-	terrain.mark_disturbed(heap, 4.0)
+	# Wide haul road out of the gate. The yard and the road can't be dug up, so the way
+	# out can never be cut off.
+	var road := center + Vector2(0, -ZONE_HALF.y - ROAD_HALF.y)
+	terrain.flatten(road, ROAD_HALF, 6.0, level)
+	terrain.paint_gravel(road, ROAD_HALF - Vector2(0.5, 0.0))
+	terrain.protect(center, ZONE_HALF + Vector2(2.0, 2.0))
+	terrain.protect(road, ROAD_HALF + Vector2(1.0, 0.0))
+	# (The stockpiles in the bays are loose material dumped on top later, so they can be dug.)
 	return level
 
 
-## Builds the construction depot; returns loose props (cones, barriers, drums, pipes).
-static func build_zone(parent: Node3D, center: Vector2, level: float) -> Array[RigidBody3D]:
+## Builds the construction depot. Everything in it is fixed (and batched into a few
+## meshes); returns the (now empty) list of loose props.
+static func build_zone(main: Node3D, center: Vector2, level: float) -> Array[RigidBody3D]:
 	var props: Array[RigidBody3D] = []
+	var parent := Node3D.new()
+	parent.name = "Depot"
+	main.add_child(parent)
 	var o := Vector3(center.x, level, center.y)
 	var white := Color(0.92, 0.92, 0.9)
 	var glass := Color(0.15, 0.22, 0.3)
@@ -154,26 +221,29 @@ static func build_zone(parent: Node3D, center: Vector2, level: float) -> Array[R
 		var x := -hx + i * (2.0 * hx / spans)
 		var x2 := x + 2.0 * hx / spans
 		_fence_panel(parent, o + Vector3(x, 0, hz), o + Vector3(x2, 0, hz))
-		if absf((x + x2) * 0.5) > 8.0:
+		if absf((x + x2) * 0.5) > GATE_HALF:
 			_fence_panel(parent, o + Vector3(x, 0, -hz), o + Vector3(x2, 0, -hz))
 	for i in 18:
 		var z := -hz + i * (2.0 * hz / 18)
 		var z2 := z + 2.0 * hz / 18
 		_fence_panel(parent, o + Vector3(hx, 0, z), o + Vector3(hx, 0, z2))
 		_fence_panel(parent, o + Vector3(-hx, 0, z), o + Vector3(-hx, 0, z2))
-	var booth := o + Vector3(11, 0, -hz + 3.0)
+	var booth := o + Vector3(GATE_HALF + 4.5, 0, -hz + 3.0)
 	_static_box(parent, Vector3(2.4, 2.6, 2.4), booth + Vector3(0, 1.3, 0), white)
 	_visual_box(parent, Vector3(2.5, 0.12, 2.5), booth + Vector3(0, 2.66, 0), Color(0.25, 0.4, 0.65))
 	_visual_box(parent, Vector3(1.6, 0.8, 0.05), booth + Vector3(0, 1.7, -1.22), glass)
 	_label(parent, "SECURITY", booth + Vector3(0, 2.35, -1.25), 0.004, Color(0.15, 0.2, 0.35))
-	_static_box(parent, Vector3(0.4, 1.1, 0.4), o + Vector3(8.6, 0.55, -hz), Color(0.9, 0.85, 0.2))
-	for k in 6:  # barrier arm, raised, red and white
-		_visual_box(parent, Vector3(0.14, 0.7, 0.14), o + Vector3(8.6, 1.45 + k * 0.7, -hz), Color(0.85, 0.15, 0.1) if k % 2 == 0 else white)
+	for side in [-1.0, 1.0]:  # gate posts with raised barrier arms, red and white
+		var post := o + Vector3(side * (GATE_HALF + 0.6), 0, -hz)
+		_static_box(parent, Vector3(0.5, 1.2, 0.5), post + Vector3(0, 0.6, 0), Color(0.9, 0.85, 0.2))
+		for k in 8:
+			_visual_box(parent, Vector3(0.14, 0.7, 0.14), post + Vector3(0, 1.55 + k * 0.7, 0), Color(0.85, 0.15, 0.1) if k % 2 == 0 else white)
+		_visual_box(parent, Vector3(0.3, 0.3, 0.3), post + Vector3(0, 7.3, 0), Color(1.0, 0.55, 0.05), true)
 
 	# --- Weighbridge across the gate road, with its office.
-	_static_box(parent, Vector3(4.0, 0.22, 14.0), o + Vector3(0, 0.11, -hz + 9.0), Color(0.42, 0.44, 0.46))
+	_visual_box(parent, Vector3(4.0, 0.06, 14.0), o + Vector3(0, 0.03, -hz + 9.0), Color(0.42, 0.44, 0.46))
 	for k in 6:
-		_visual_box(parent, Vector3(4.02, 0.03, 0.12), o + Vector3(0, 0.23, -hz + 3.0 + k * 2.4), Color(0.9, 0.75, 0.1))
+		_visual_box(parent, Vector3(4.02, 0.02, 0.12), o + Vector3(0, 0.07, -hz + 3.0 + k * 2.4), Color(0.9, 0.75, 0.1))
 	var scale_house := o + Vector3(-5.5, 0, -hz + 9.0)
 	_static_box(parent, Vector3(3.0, 2.5, 2.6), scale_house + Vector3(0, 1.25, 0), white)
 	_visual_box(parent, Vector3(0.05, 0.8, 1.6), scale_house + Vector3(1.52, 1.6, 0), glass)
@@ -206,9 +276,14 @@ static func build_zone(parent: Node3D, center: Vector2, level: float) -> Array[R
 	_static_box(parent, Vector3(1.2, 1.0, 1.6), shed + Vector3(7.5, 0.5, 2.0), Color(0.25, 0.25, 0.28))  # engine block
 	_static_box(parent, Vector3(0.2, 3.5, 0.2), shed + Vector3(6.4, 1.75, 2.0), Color(0.85, 0.6, 0.1))  # hoist
 	_visual_box(parent, Vector3(2.6, 0.2, 0.2), shed + Vector3(7.5, 3.4, 2.0), Color(0.85, 0.6, 0.1))
-	for d in 6:
-		props.append(_drum(parent, shed + Vector3(-9.5 + (d % 3) * 0.7, 0.45, -1.0 + floorf(d / 3.0) * 0.7),
-				[Color(0.15, 0.35, 0.65), Color(0.75, 0.15, 0.1), Color(0.2, 0.5, 0.3)][d % 3]))
+	for d in 6:  # oil drums along the wall
+		var drum := CylinderMesh.new()
+		drum.top_radius = 0.3
+		drum.bottom_radius = 0.3
+		drum.height = 0.9
+		drum.radial_segments = 12
+		_static_mesh(parent, drum, Transform3D(Basis.IDENTITY, shed + Vector3(-9.5 + (d % 3) * 0.7, 0.45, 5.5 + floorf(d / 3.0) * 0.7)),
+				[Color(0.15, 0.35, 0.65), Color(0.75, 0.15, 0.1), Color(0.2, 0.5, 0.3)][d % 3], Vector3(0.6, 0.9, 0.6))
 	# Scaffolding against the shed's east wall.
 	var scaffold := shed + Vector3(shed_size.x * 0.5 + 1.0, 0, -2)
 	for sx in [0.0, 1.6]:
@@ -277,7 +352,7 @@ static func build_zone(parent: Node3D, center: Vector2, level: float) -> Array[R
 
 	# --- Container yard.
 	for c in [[Vector3(30, 0, 1), Color(0.85, 0.42, 0.15), 0.0], [Vector3(30, 0, 4), Color(0.2, 0.42, 0.65), 0.0],
-			[Vector3(30, 2.6, 1), Color(0.3, 0.55, 0.3), 0.0], [Vector3(22, 0, 7), Color(0.75, 0.2, 0.15), PI * 0.5]]:
+			[Vector3(30, 2.6, 1), Color(0.3, 0.55, 0.3), 0.0], [Vector3(30, 2.6, 4), Color(0.75, 0.2, 0.15), 0.0]]:
 		var base: Vector3 = o + (c[0] as Vector3)
 		var container := StaticBody3D.new()
 		container.collision_layer = STATIC_LAYER
@@ -295,26 +370,42 @@ static func build_zone(parent: Node3D, center: Vector2, level: float) -> Array[R
 			_child_box(container, Vector3(0.12, 2.4, 2.5), Vector3(-2.7 + k * 0.6, 1.3, 0), (c[1] as Color).darkened(0.15))
 
 	# --- Wash bay.
-	var wash := o + Vector3(6, 0, -8)
-	_static_box(parent, Vector3(8.0, 0.12, 6.0), wash + Vector3(0, 0.06, 0), concrete.darkened(0.1))
+	var wash := o + Vector3(-11.5, 0, -21.5)
+	_visual_box(parent, Vector3(8.0, 0.05, 6.0), wash + Vector3(0, 0.025, 0), concrete.darkened(0.1))
 	for side in [-1.0, 1.0]:
 		_static_box(parent, Vector3(0.2, 2.2, 0.2), wash + Vector3(side * 4.2, 1.1, -2.6), steel)
 		_visual_box(parent, Vector3(0.5, 0.5, 0.3), wash + Vector3(side * 4.2, 1.4, -2.4), Color(0.85, 0.65, 0.1))
 	_label(parent, "WASH BAY", wash + Vector3(0, 2.0, -2.7), 0.006, Color(0.15, 0.2, 0.35))
 
-	# --- Parking bays for the machines (painted lines) and parked vehicles.
-	for k in 6:
-		_visual_box(parent, Vector3(0.14, 0.02, 7.0), o + Vector3(-6.5 + k * 6.5, 0.02, 9.5), white)
-	_visual_box(parent, Vector3(32.5, 0.02, 0.14), o + Vector3(9.75, 0.02, 13.0), white)
-	_pickup(parent, o + Vector3(14, 0, -4), Color(0.95, 0.95, 0.95))
-	_pickup(parent, o + Vector3(18, 0, -4), Color(0.2, 0.4, 0.75))
-	_roller(parent, o + Vector3(23, 0, 9.5))
+	# --- Delivery bays: new machines arrive here (painted lines and bay numbers).
+	var bay_line := Color(0.95, 0.85, 0.2)
+	for row in [[11.0, 6], [-2.5, 5]]:
+		var x0 := -6.0 - BAY_WIDTH * 0.5
+		for k in row[1]:
+			_visual_box(parent, Vector3(0.16, 0.02, 9.0), o + Vector3(x0 + k * BAY_WIDTH, 0.03, row[0]), bay_line)
+		_visual_box(parent, Vector3(BAY_WIDTH * (row[1] - 1), 0.02, 0.16), o + Vector3(x0 + BAY_WIDTH * 0.5 * (row[1] - 1), 0.03, row[0] + 4.5), bay_line)
+	for k in SPAWN_BAYS.size():
+		var bay := SPAWN_BAYS[k]
+		var number := Label3D.new()
+		number.text = str(k + 1)
+		number.font_size = 96
+		number.pixel_size = 0.02
+		number.modulate = Color(0.95, 0.85, 0.2, 0.9)
+		number.position = o + Vector3(bay.x, 0.05, bay.y + 3.4)
+		number.rotation = Vector3(-PI * 0.5, 0, 0)
+		parent.add_child(number)
+	for bay in TRAILER_BAYS:
+		_visual_box(parent, Vector3(15.0, 0.02, 0.16), o + Vector3(bay.x, 0.03, bay.y - 1.75), bay_line)
+	# Dispatch board by the bays.
+	var board := o + Vector3(-12.5, 0, 4.5)
+	for side in [-1.0, 1.0]:
+		_static_box(parent, Vector3(0.2, 3.4, 0.2), board + Vector3(side * 2.2, 1.7, 0), steel)
+	_visual_box(parent, Vector3(4.8, 2.0, 0.12), board + Vector3(0, 2.6, 0), Color(0.12, 0.13, 0.15))
+	_visual_box(parent, Vector3(4.8, 0.3, 0.14), board + Vector3(0, 3.65, 0), Color(0.98, 0.78, 0.15))
+	_label(parent, "DISPATCH", board + Vector3(0, 3.65, -0.09), 0.006, Color(0.12, 0.1, 0.08))
+	_label(parent, "TAB  ·  HIRE MACHINES & TAKE JOBS", board + Vector3(0, 2.7, -0.08), 0.0045, Color(0.95, 0.95, 0.95))
 
 	# --- Yard odds and ends.
-	var pipe_base := o + Vector3(4, 0, 21)
-	for row in 3:
-		for k in 3 - row:
-			props.append(_pipe(parent, pipe_base + Vector3(0, 0.62 + row * 1.08, (k - (2 - row) * 0.5) * 1.26)))
 	for d in 2:  # cable drums on their sides
 		var drum := CylinderMesh.new()
 		drum.top_radius = 0.9
@@ -331,22 +422,94 @@ static func build_zone(parent: Node3D, center: Vector2, level: float) -> Array[R
 		_visual_box(parent, Vector3(1.1, 0.8, 0.9), pallet + Vector3(0, 0.55, 0), Color(0.72, 0.32, 0.22))
 	for c in [Vector3(-34, 0, -22), Vector3(34, 0, -22), Vector3(34, 0, 23.5)]:
 		_light_tower(parent, o + c)
-	for b in [[Vector3(-10, 0, -22.5), 0.0], [Vector3(-12.2, 0, -22.5), 0.0], [Vector3(10, 0, -18), PI * 0.5],
-			[Vector3(10, 0, -15.8), PI * 0.5], [Vector3(-14, 0, -2), PI * 0.5], [Vector3(-14, 0, 0.2), PI * 0.5]]:
-		props.append(_rigid_box(parent, Vector3(2.0, 0.8, 0.6), o + (b[0] as Vector3) + Vector3(0, 0.41, 0), concrete, 900.0, b[1]))
-	for c in [Vector3(-3, 0, -24), Vector3(3, 0, -24), Vector3(-3, 0, -12), Vector3(3, 0, -12),
-			Vector3(1.5, 0, -10.5), Vector3(10.5, 0, -10.5), Vector3(-1, 0, 1.5), Vector3(13, 0, 1.5),
-			Vector3(-1, 0, -4), Vector3(25, 0, -6), Vector3(17, 0, -9), Vector3(-16, 0, -8)]:
-		props.append(_cone(parent, o + c))
 	# Company sign at the gate, readable from both sides.
-	var sign := o + Vector3(0, 0, -hz - 1.6)
-	_static_box(parent, Vector3(0.15, 3.2, 0.15), sign + Vector3(-3.6, 1.6, 0), Color(0.4, 0.3, 0.2))
-	_static_box(parent, Vector3(0.15, 3.2, 0.15), sign + Vector3(3.6, 1.6, 0), Color(0.4, 0.3, 0.2))
-	_visual_box(parent, Vector3(7.6, 1.6, 0.1), sign + Vector3(0, 2.7, 0), Color(0.98, 0.78, 0.15))
+	# Company sign: a gantry right over the wide gate, readable from both sides.
+	var sign := o + Vector3(0, 0, -hz)
+	for side in [-1.0, 1.0]:
+		_static_box(parent, Vector3(0.45, 8.0, 0.45), sign + Vector3(side * (GATE_HALF + 1.6), 4.0, 0), steel)
+	_visual_box(parent, Vector3(2.0 * GATE_HALF + 3.6, 0.5, 0.5), sign + Vector3(0, 7.8, 0), steel)
+	_visual_box(parent, Vector3(13.0, 1.8, 0.12), sign + Vector3(0, 6.6, 0), Color(0.98, 0.78, 0.15))
 	for face in [-1.0, 1.0]:
-		_label(parent, "EARTHWORKS CO.", sign + Vector3(0, 2.95, 0.07 * face), 0.012, Color(0.12, 0.1, 0.08), face > 0.0)
-		_label(parent, "CONSTRUCTION DEPOT  ·  HARD HATS ON", sign + Vector3(0, 2.4, 0.07 * face), 0.006, Color(0.12, 0.1, 0.08), face > 0.0)
+		_label(parent, "EARTHWORKS CO.", sign + Vector3(0, 6.85, 0.08 * face), 0.016, Color(0.12, 0.1, 0.08), face > 0.0)
+		_label(parent, "CONSTRUCTION DEPOT  ·  HARD HATS ON", sign + Vector3(0, 6.2, 0.08 * face), 0.007, Color(0.12, 0.1, 0.08), face > 0.0)
+	batch_meshes(parent)
 	return props
+
+
+## Quarry furniture: a site cabin, a sign, a fuel tank and cones round the gravel piles.
+static func quarry_props(main: Node3D, center: Vector2, level: float) -> void:
+	var root := Node3D.new()
+	root.name = "Quarry"
+	main.add_child(root)
+	var o := Vector3(center.x, level, center.y)
+	var cabin := o + Vector3(30, 0, 22)
+	_static_box(root, Vector3(6.0, 2.6, 2.6), cabin + Vector3(0, 1.3, 0), Color(0.92, 0.9, 0.84))
+	_visual_box(root, Vector3(6.1, 0.12, 2.7), cabin + Vector3(0, 2.66, 0), Color(0.85, 0.45, 0.1))
+	for wx in [-1.6, 1.6]:
+		_visual_box(root, Vector3(1.0, 0.8, 0.05), cabin + Vector3(wx, 1.7, -1.32), Color(0.15, 0.22, 0.3))
+	_label(root, "QUARRY OFFICE", cabin + Vector3(0, 2.35, -1.35), 0.005, Color(0.15, 0.2, 0.35))
+	var sign := o + Vector3(-38, 0, -30)
+	for side in [-1.0, 1.0]:
+		_static_box(root, Vector3(0.18, 3.6, 0.18), sign + Vector3(side * 3.0, 1.8, 0), Color(0.4, 0.3, 0.2))
+	_visual_box(root, Vector3(6.6, 1.6, 0.12), sign + Vector3(0, 3.0, 0), Color(0.98, 0.78, 0.15))
+	for face in [-1.0, 1.0]:
+		_label(root, "GRAVEL QUARRY", sign + Vector3(0, 3.25, 0.08 * face), 0.011, Color(0.12, 0.1, 0.08), face > 0.0)
+		_label(root, "LOAD GRAVEL HERE  ·  GRAVEL = FIRM GROUND", sign + Vector3(0, 2.7, 0.08 * face), 0.0045, Color(0.12, 0.1, 0.08), face > 0.0)
+	var tank := o + Vector3(30, 0, 14)
+	_static_box(root, Vector3(4.0, 0.4, 2.4), tank + Vector3(0, 0.2, 0), Color(0.7, 0.7, 0.68))
+	var drum := CylinderMesh.new()
+	drum.top_radius = 0.9
+	drum.bottom_radius = 0.9
+	drum.height = 3.2
+	drum.radial_segments = 14
+	_static_mesh(root, drum, Transform3D(Basis(Vector3.FORWARD, PI * 0.5), tank + Vector3(0, 1.3, 0)), Color(0.35, 0.5, 0.3), Vector3(3.2, 1.8, 1.8))
+	for k in 10:
+		var a := TAU * k / 10.0
+		var c := o + Vector3(cos(a) * 42.0, 0, sin(a) * 31.0)
+		_static_box(root, Vector3(0.35, 0.7, 0.35), c + Vector3(0, 0.35, 0), Color(1.0, 0.45, 0.08))
+	_light_tower(root, o + Vector3(-34, 0, 22))
+	batch_meshes(root)
+
+
+## Collapses every fixed mesh under `root` into one mesh per material (the depot is made
+## of hundreds of boxes; drawn one by one they cost thousands of draw calls).
+static func batch_meshes(root: Node3D) -> void:
+	var groups := {}
+	var inverse := root.global_transform.affine_inverse()
+	var stack: Array[Node] = [root]
+	while not stack.is_empty():
+		var node: Node = stack.pop_back()
+		for child in node.get_children():
+			if child is RigidBody3D:
+				continue
+			stack.append(child)
+			var mi := child as MeshInstance3D
+			if mi == null or mi.mesh == null or mi.material_override == null or mi.mesh.get_surface_count() != 1:
+				continue
+			var key: Variant = "plain" if Kit.is_plain(mi.material_override) else mi.material_override
+			if not groups.has(key):
+				groups[key] = []
+			groups[key].append(mi)
+	if groups.has("plain"):
+		var parts := []
+		for mi in groups["plain"]:
+			parts.append([(mi as MeshInstance3D).mesh, inverse * (mi as MeshInstance3D).global_transform, (mi as MeshInstance3D).material_override])
+			(mi as Node).get_parent().remove_child(mi)
+			(mi as Node).queue_free()
+		groups.erase("plain")
+		var merged_plain := MeshInstance3D.new()
+		merged_plain.mesh = Kit.plain_mesh(parts)
+		root.add_child(merged_plain)
+	for mat in groups:
+		var tool := SurfaceTool.new()
+		for mi in groups[mat]:
+			tool.append_from((mi as MeshInstance3D).mesh, 0, inverse * (mi as MeshInstance3D).global_transform)
+			(mi as Node).get_parent().remove_child(mi)
+			(mi as Node).queue_free()
+		var merged := MeshInstance3D.new()
+		merged.mesh = tool.commit()
+		merged.material_override = mat
+		root.add_child(merged)
 
 
 static func _light_tower(parent: Node3D, base: Vector3) -> void:
@@ -484,11 +647,13 @@ static func _fence_panel(parent: Node3D, a: Vector3, b: Vector3) -> void:
 	panel.size = Vector2(length, 1.9)
 	mesh.mesh = panel
 	mesh.position.y = 1.05
-	var mesh_mat := StandardMaterial3D.new()
-	mesh_mat.albedo_color = Color(0.6, 0.62, 0.65, 0.35)
-	mesh_mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
-	mesh_mat.cull_mode = BaseMaterial3D.CULL_DISABLED
-	mesh.material_override = mesh_mat
+	if not _materials.has("fence"):
+		var mesh_mat := StandardMaterial3D.new()
+		mesh_mat.albedo_color = Color(0.6, 0.62, 0.65, 0.35)
+		mesh_mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+		mesh_mat.cull_mode = BaseMaterial3D.CULL_DISABLED
+		_materials["fence"] = mesh_mat
+	mesh.material_override = _materials["fence"]
 	body.add_child(mesh)
 
 

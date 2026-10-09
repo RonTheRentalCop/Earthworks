@@ -25,6 +25,17 @@ const DECK := Color(0.5, 0.37, 0.24)
 const STEEL := Color(0.55, 0.56, 0.58)
 
 var machine_name := "Lowboy trailer"
+## True builds only the model (shop thumbnails).
+var preview := false
+## Multiplayer: a copy on a joining player's machine that follows the host.
+var puppet := false
+var _net_xform := Transform3D()
+var _net_has := false
+var _net_ramp := 0.0
+var _net_speed := 0.0
+var _wheel_spin := 0.0
+var _wheels: Array[VehicleWheel3D] = []
+var _wheel_rest: Array[Vector3] = []
 var towed_by: Node3D
 var ramps_down := true
 var _joint: PinJoint3D
@@ -50,9 +61,18 @@ func _ready() -> void:
 	_build()
 	for w in [[-1.15, -3.6, true], [1.15, -3.6, true], [-1.15, 2.6, false], [1.15, 2.6, false], [-1.15, 3.7, false], [1.15, 3.7, false]]:
 		_add_wheel(Vector3(w[0], 0.85, -(w[1] as float)), w[2], w[0] > 0.0)
+	Kit.merge_tree(_model)
+	if preview:
+		freeze = true
+		set_physics_process(false)
+		return
+	add_to_group("trailers")
 
 
 func _physics_process(delta: float) -> void:
+	if puppet:
+		_puppet_step(delta)
+		return
 	brake = 0.0 if towed_by else 60.0
 	if towed_by and is_instance_valid(towed_by):
 		# Front axle follows the drawbar.
@@ -63,6 +83,42 @@ func _physics_process(delta: float) -> void:
 	var target := _ramp_down_angle if ramps_down else RAMP_UP
 	_ramp.rotation.x = move_toward(_ramp.rotation.x, target, RAMP_RATE * delta)
 	_ramp_shape.transform = _model.transform * _ramp.transform * Transform3D(Basis.IDENTITY, Vector3(0, 0.0, RAMP_LENGTH * 0.5))
+
+
+## Multiplayer state (host -> joining players).
+func net_state() -> Array:
+	return [_ramp.rotation.x, linear_velocity.dot(global_basis.z), ramps_down]
+
+
+func make_puppet() -> void:
+	puppet = true
+	freeze_mode = RigidBody3D.FREEZE_MODE_KINEMATIC
+	freeze = true
+	for w in _wheels:
+		_wheel_rest.append(w.position - Vector3(0, 0.2, 0))
+
+
+func apply_net_state(xform: Transform3D, s: Array) -> void:
+	_net_xform = xform
+	if not _net_has:
+		_net_has = true
+		global_transform = xform
+	_net_ramp = s[0]
+	_net_speed = s[1]
+	ramps_down = s[2]
+
+
+func _puppet_step(delta: float) -> void:
+	if not _net_has:
+		return
+	var t := 1.0 - exp(-14.0 * delta)
+	global_transform = global_transform.interpolate_with(_net_xform, t)
+	_ramp.rotation.x = lerpf(_ramp.rotation.x, _net_ramp, t)
+	_ramp_shape.transform = _model.transform * _ramp.transform * Transform3D(Basis.IDENTITY, Vector3(0, 0.0, RAMP_LENGTH * 0.5))
+	_wheel_spin += _net_speed / 0.42 * delta
+	for k in _wheels.size():
+		_wheels[k].position = _wheel_rest[k]
+		_wheels[k].basis = Basis(Vector3.RIGHT, _wheel_spin)
 
 
 ## Drawbar eye in world space.
@@ -96,7 +152,22 @@ func tow_point(_from: Vector3) -> Vector3:
 
 
 func hitch(truck: RigidBody3D, truck_point: Vector3) -> void:
-	# Pull the drawbar eye onto the truck's hitch, then pin them together.
+	# Tip the trailer about its rear axle so the drawbar eye comes to the hitch's height
+	# (the rear wheels stay on the ground), slide it onto the hitch, then pin them together.
+	var pivot := _model.to_global(Vector3(0, 0.4, 3.15))
+	for _step in 4:
+		var dy := truck_point.y - hitch_point().y
+		var arm := hitch_point() - pivot
+		var reach := Vector2(arm.x, arm.z).length()
+		if absf(dy) < 0.005 or reach < 0.5:
+			break
+		var angle := dy / reach
+		var axis := global_basis.x.normalized()
+		# Rotating about +X raises the -Z end; the eye is at the model's -Z, the body's +Z.
+		var turned := Transform3D(Basis(axis, -angle), Vector3.ZERO)
+		global_transform = Transform3D(turned.basis * global_basis, pivot + turned.basis * (global_position - pivot))
+		if absf(truck_point.y - hitch_point().y) > absf(dy):
+			global_transform = Transform3D(Basis(axis, 2.0 * angle) * global_basis, pivot + Basis(axis, 2.0 * angle) * (global_position - pivot))
 	global_position += truck_point - hitch_point()
 	linear_velocity = truck.linear_velocity
 	_joint = PinJoint3D.new()
@@ -203,6 +274,7 @@ func _add_wheel(pos: Vector3, steer: bool, positive_x: bool) -> void:
 	wheel.damping_relaxation = 2.4
 	wheel.wheel_friction_slip = 2.5
 	add_child(wheel)
+	_wheels.append(wheel)
 	if steer:
 		_front_wheels.append(wheel)
 	Kit.wheel(wheel, 0.42, 0.4, Color(0.85, 0.85, 0.85), 1.0 if positive_x else -1.0)  # hub faces outward

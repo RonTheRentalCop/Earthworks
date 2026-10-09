@@ -25,10 +25,11 @@ var _look_keys := Vector2.ZERO
 
 
 func _ready() -> void:
+	physics_interpolation_mode = Node.PHYSICS_INTERPOLATION_MODE_OFF
 	current = true
 	fov = 62.0
 	near = 0.05
-	far = 400.0
+	far = 1500.0
 
 
 ## Switch what the camera looks at; `follow` makes it trail the target's heading.
@@ -101,14 +102,14 @@ func _look_around(delta: float) -> void:
 
 
 func _desired_yaw() -> float:
-	return target.global_rotation.y + orbit if follow_yaw else orbit
+	return target.get_global_transform_interpolated().basis.get_euler().y + orbit if follow_yaw else orbit
 
 
 func _update_transform() -> void:
 	if cab_view and eye:
-		global_transform = (eye.global_transform * Transform3D(Basis.from_euler(Vector3(_look.y, _look.x, 0)))).orthonormalized()
+		global_transform = (eye.get_global_transform_interpolated() * Transform3D(Basis.from_euler(Vector3(_look.y, _look.x, 0)))).orthonormalized()
 		return
-	var focus := target.global_position + Vector3(0, 1.5, 0)
+	var focus := target.get_global_transform_interpolated().origin + Vector3(0, 1.5, 0)
 	var offset := Vector3(sin(_yaw) * cos(pitch), sin(pitch), cos(_yaw) * cos(pitch)) * distance
 	var pos := focus + offset
 	pos.y = maxf(pos.y, terrain.get_height(pos.x, pos.z) + 0.5)

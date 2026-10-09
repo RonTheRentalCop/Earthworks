@@ -28,13 +28,18 @@ static func setup() -> void:
 	# On foot / machines
 	_add("interact", [KEY_F], [], [JOY_BUTTON_X])
 	_add("jump", [KEY_SPACE], [], [JOY_BUTTON_A])
+	_add("sprint", [KEY_SHIFT], [], [JOY_BUTTON_LEFT_STICK])
 	_add("toggle_view", [KEY_V], [], [JOY_BUTTON_RIGHT_STICK])
 	_add("winch", [KEY_H], [], [JOY_BUTTON_B])
 	_add("utility", [KEY_N, KEY_T], [], [JOY_BUTTON_LEFT_STICK])
-	# Utility
-	_add("reset_vehicle", [KEY_BACKSPACE], [], [JOY_BUTTON_BACK])
-	_add("restart", [KEY_F5], [], [JOY_BUTTON_START])
+	_add("handbrake", [KEY_SPACE], [], [JOY_BUTTON_A])
+	# Menus and utility
+	_add("menu", [KEY_TAB], [], [JOY_BUTTON_BACK])
+	_add("pause", [KEY_ESCAPE], [], [JOY_BUTTON_START])
+	_add("reset_vehicle", [KEY_BACKSPACE], [], [])
+	_add("restart", [KEY_F5], [], [])
 	_add("toggle_help", [KEY_F1], [], [JOY_BUTTON_Y])
+	_add("map_zoom", [KEY_M], [], [])
 
 
 static func _add(action: StringName, keys: Array, axes: Array, buttons: Array) -> void:

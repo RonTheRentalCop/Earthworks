@@ -1,25 +1,48 @@
 extends Node3D
-## Deformable heightmap terrain. Soil is a volume budget: digging removes volume,
-## dumping adds it back, and slumping spreads steep piles into natural slopes.
-## Rendered as smooth-shaded chunks: golden ground under the grass, gravel yards,
-## shiny mud, and soil that shifts from topsoil to red subsoil, clay and rock the
-## deeper you cut. Collision is split into tiles so digging only rebuilds nearby ones.
+## Deformable heightmap terrain for a 1 km square world at 25 cm resolution.
+##
+## The world is far too big to build up front, so everything is lazy:
+## - The ground is generated in 8 m blocks the first time anything needs them (driving
+##   near, digging, a query): a smooth base (sampled from a 1 m noise grid) plus the
+##   world's features — mounds, basins, flattened pads, river channels, mud, gravel,
+##   protected ground — which main.gd records while laying out the world and which are
+##   replayed onto each block as it's generated.
+## - Within NEAR_RADIUS of the camera the ground is drawn in 16 m chunks at full detail
+##   (with distance LODs and skirts); beyond that, 128 m horizon tiles at 2 m spacing
+##   cover the rest of the map, with holes where the detailed chunks are.
+## - Collision tiles exist only around the things that need them (players, machines,
+##   loose logs and rubble): main.gd passes those "anchors" in.
+## Digging, dumping, ruts, slumping, mud and the network sync work on the full-resolution
+## arrays as before.
 
 signal area_changed(world_rect: Rect2)
 signal chunk_rebuilt(cx: int, cz: int)
 
-const CELLS := 1152
+const CELLS := 4096
 const CELL_SIZE := 0.25
 const VERTS := CELLS + 1
-const CHUNK_CELLS := 32
-const CHUNKS := 36  # CELLS / CHUNK_CELLS
-const COLLISION_CELLS := 64
-const COLLISION_TILES := 18  # CELLS / COLLISION_CELLS
-const HALF_SIZE := CELLS * CELL_SIZE * 0.5
+const HALF_SIZE := CELLS * CELL_SIZE * 0.5  # 512 m
 const CELL_AREA := CELL_SIZE * CELL_SIZE
-const MIN_HEIGHT := -12.0
+const GEN_CELLS := 32  # generated in 8 m blocks
+const GEN_CHUNKS := 128  # CELLS / GEN_CELLS
+const CHUNK_CELLS := 64  # drawn in 16 m chunks
+const CHUNKS := 64  # CELLS / CHUNK_CELLS
+const COLLISION_CELLS := 64
+const COLLISION_TILES := 64  # CELLS / COLLISION_CELLS
+const BASE_STEP := 4  # the smooth base is sampled every metre
+const BASE_VERTS := 1025  # CELLS / BASE_STEP + 1
+const NEAR_RADIUS := 150.0  # detailed chunks within this of the camera
+const STREAM_BUDGET_USEC := 5000  # time per frame for streaming ground in
+const FAR_TILE_CELLS := 512  # 128 m horizon tiles
+const FAR_TILES := 8
+const FAR_STEP := 8  # 2 m between horizon vertices
+const FAR_N := 65  # FAR_TILE_CELLS / FAR_STEP + 1
+const MIN_HEIGHT := -14.0
 const TALUS := CELL_SIZE * 0.72  # max height step between neighbours (~36 degree slopes)
 const COLLISION_INTERVAL := 0.1
+const LOD_STEPS: Array[int] = [2, 4, 8, 16]  # coarser index sets for distant chunks
+const LOD_ERROR := 0.012  # LOD key (m of error) per vertex step
+const SKIRT := 1.5  # chunk edges hang a skirt this deep so LOD seams never show gaps
 
 const GROUND := Color(0.66, 0.52, 0.27)  # under the grass
 const GRAVEL := Color(0.6, 0.57, 0.5)
@@ -32,6 +55,17 @@ const ROCK := Color(0.5, 0.47, 0.44)
 
 const SURFACE_SOIL := 0
 const SURFACE_GRAVEL := 1
+
+# World features (recorded while laying out the world, replayed onto each block).
+const OP_MOUND := 0
+const OP_FLATTEN := 1
+const OP_CHANNEL := 2
+const OP_RING := 3
+const OP_MUD := 4
+const OP_GRAVEL := 5
+const OP_PROTECT := 6
+const OP_DISTURB := 7
+const OP_NOGRASS := 8
 
 const SHADER := """
 shader_type spatial;
@@ -77,15 +111,39 @@ var grass_mask := PackedByteArray()  # 0 where grass never grows (water beds, ya
 var mud := PackedFloat32Array()  # 0 dry .. 1 deep mud
 var surface := PackedByteArray()  # SURFACE_SOIL / SURFACE_GRAVEL
 var pressed := PackedByteArray()  # 1 = already rutted by tracks or wheels
-## Volume the last cut_flat() call wanted to remove (it may have removed less).
+var protected := PackedByteArray()  # 1 = can't be dug below its original level (the depot)
+## Detailed chunks load around this node (the camera).
+var focus: Node3D
+## The volume the last cut_flat() wanted to remove (for the dozer's hold-back).
 var last_cut_wanted := 0.0
+## Multiplayer (host): chunks changed since the last sync, and every chunk that differs
+## from the generated world (sent to players who join later).
+var net_record := false
+var net_dirty := {}
+var net_changed := {}
 
-var _chunk_meshes: Array[MeshInstance3D] = []
-var _dirty_chunks := {}
+var _base := PackedFloat32Array()  # smooth ground every BASE_STEP cells
+var _generated := PackedByteArray()  # per 8 m block
+var _ops: Array = []  # recorded world features
+var _op_grid: Array = []  # per 64 m cell: indices of the features touching it
+const OP_CELL := 64.0
+const OP_GRID := 16
+var _building := true  # until finalize(): features also shape the "original" ground
 var _material := ShaderMaterial.new()
 var _chunk_indices := PackedInt32Array()
-var _collision_shapes: Array[HeightMapShape3D] = []
+var _chunk_lods := {}  # LOD key -> index array (same vertices, fewer of them)
+var _near := {}  # chunk index -> MeshInstance3D
+var _near_queue: Array = []
+var _last_focus := Vector3.INF
+var _dirty_chunks := {}
+var _far_meshes: Array[MeshInstance3D] = []
+var _far_vertices := {}  # tile -> [verts, normals, colors, uvs] (cached; holes only change indices)
+var _far_dirty := {}  # tile -> true (holes changed)
+var _far_stale := {}  # tile -> true (ground under it changed; refresh vertices too)
+var _collision_body: StaticBody3D
+var _collision := {}  # tile index -> [CollisionShape3D, HeightMapShape3D, last wanted msec]
 var _dirty_collision := {}
+var _pending_collision := {}  # tile -> distance² to the anchor that wants it
 var _collision_timer := 0.0
 var _wake_rect := Rect2i()
 var _has_wake := false
@@ -94,9 +152,13 @@ var _slumping := false
 var _full_rect := Rect2i(0, 0, VERTS, VERTS)
 
 
+# --- World generation ---------------------------------------------------------------------
+
+## Sets up the arrays and the smooth base ground (hills, valleys, small rolls).
 func generate(seed_value: int) -> void:
 	var count := VERTS * VERTS
 	heights.resize(count)
+	original.resize(count)
 	disturbed.resize(count)
 	disturbed.fill(0)
 	grass_mask.resize(count)
@@ -107,6 +169,17 @@ func generate(seed_value: int) -> void:
 	surface.fill(SURFACE_SOIL)
 	pressed.resize(count)
 	pressed.fill(0)
+	protected.resize(count)
+	protected.fill(0)
+	_generated.resize(GEN_CHUNKS * GEN_CHUNKS)
+	_generated.fill(0)
+	_op_grid.resize(OP_GRID * OP_GRID)
+	for k in _op_grid.size():
+		_op_grid[k] = PackedInt32Array()
+	var macro := FastNoiseLite.new()
+	macro.seed = seed_value + 7
+	macro.frequency = 0.0022
+	macro.fractal_octaves = 3
 	var hills := FastNoiseLite.new()
 	hills.seed = seed_value
 	hills.frequency = 0.008
@@ -114,43 +187,47 @@ func generate(seed_value: int) -> void:
 	var detail := FastNoiseLite.new()
 	detail.seed = seed_value + 1
 	detail.frequency = 0.05
-	for z in VERTS:
-		for x in VERTS:
-			var w := grid_to_world(x, z)
+	_base.resize(BASE_VERTS * BASE_VERTS)
+	for z in BASE_VERTS:
+		for x in BASE_VERTS:
+			var w := Vector2(x * BASE_STEP * CELL_SIZE - HALF_SIZE, z * BASE_STEP * CELL_SIZE - HALF_SIZE)
 			# Fade to flat at the border so the map meets the surrounding meadow.
-			var edge := 1.0 - smoothstep(HALF_SIZE - 8.0, HALF_SIZE - 0.5, maxf(absf(w.x), absf(w.y)))
-			heights[z * VERTS + x] = (hills.get_noise_2dv(w) * 4.5 + detail.get_noise_2dv(w) * 0.5) * edge
+			var edge := 1.0 - smoothstep(HALF_SIZE - 24.0, HALF_SIZE - 1.0, maxf(absf(w.x), absf(w.y)))
+			var h := macro.get_noise_2dv(w) * 9.0 + hills.get_noise_2dv(w) * 4.0 + detail.get_noise_2dv(w) * 0.45
+			_base[z * BASE_VERTS + x] = h * edge
+
+
+## Smooth base height at a vertex (bilinear from the 1 m grid).
+func _base_at(x: int, z: int) -> float:
+	var bx := mini(x / BASE_STEP, BASE_VERTS - 2)
+	var bz := mini(z / BASE_STEP, BASE_VERTS - 2)
+	var fx := float(x - bx * BASE_STEP) / BASE_STEP
+	var fz := float(z - bz * BASE_STEP) / BASE_STEP
+	var i := bz * BASE_VERTS + bx
+	var top := lerpf(_base[i], _base[i + 1], fx)
+	var bottom := lerpf(_base[i + BASE_VERTS], _base[i + BASE_VERTS + 1], fx)
+	return lerpf(top, bottom, fz)
 
 
 func add_mound(center: Vector2, radius: float, height: float) -> void:
-	var r := _world_rect(center, Vector2(radius, radius))
-	for z in range(r.position.y, r.end.y):
-		for x in range(r.position.x, r.end.x):
-			var d := grid_to_world(x, z).distance_to(center)
-			if d < radius:
-				heights[z * VERTS + x] += height * 0.5 * (1.0 + cos(PI * d / radius))
+	_record({"t": OP_MOUND, "c": center, "r": radius, "h": height,
+		"rect": Rect2(center - Vector2(radius, radius), Vector2(radius, radius) * 2.0)})
 
 
 ## Levels a rectangular pad and returns its height (`level` overrides the average).
 func flatten(center: Vector2, half_size: Vector2, blend: float, level := NAN) -> float:
-	var inner := _world_rect(center, half_size)
 	if is_nan(level):
+		var inner := _world_rect(center, half_size)
+		_ensure(inner)
 		var total := 0.0
 		var n := 0
-		for z in range(inner.position.y, inner.end.y):
-			for x in range(inner.position.x, inner.end.x):
+		for z in range(inner.position.y, inner.end.y, 2):
+			for x in range(inner.position.x, inner.end.x, 2):
 				total += heights[z * VERTS + x]
 				n += 1
 		level = total / maxi(n, 1)
-	var outer := _world_rect(center, half_size + Vector2(blend, blend))
-	for z in range(outer.position.y, outer.end.y):
-		for x in range(outer.position.x, outer.end.x):
-			var w := grid_to_world(x, z)
-			var dx := maxf(absf(w.x - center.x) - half_size.x, 0.0)
-			var dz := maxf(absf(w.y - center.y) - half_size.y, 0.0)
-			var t := 1.0 - smoothstep(0.0, blend, sqrt(dx * dx + dz * dz))
-			var i := z * VERTS + x
-			heights[i] = lerpf(heights[i], level, t)
+	_record({"t": OP_FLATTEN, "c": center, "half": half_size, "blend": blend, "level": level,
+		"rect": Rect2(center - half_size - Vector2(blend, blend), (half_size + Vector2(blend, blend)) * 2.0)})
 	return level
 
 
@@ -162,157 +239,351 @@ func carve_channel(path: PackedVector2Array, wanted: PackedFloat32Array, half_wi
 	for k in path.size():
 		beds.append(minf(wanted[k], get_height(path[k].x, path[k].y) - bank_depth * 0.9))
 	var reach := half_width + 12.0
+	# One feature per segment keeps the per-block replay cheap.
 	for s in path.size() - 1:
 		var a := path[s]
 		var b := path[s + 1]
-		var r := _world_rect((a + b) * 0.5, Vector2(absf(b.x - a.x), absf(b.y - a.y)) * 0.5 + Vector2(reach, reach))
-		var seg := b - a
-		var len_sq := maxf(seg.length_squared(), 0.0001)
-		for z in range(r.position.y, r.end.y):
-			for x in range(r.position.x, r.end.x):
-				var w := grid_to_world(x, z)
-				var t := clampf((w - a).dot(seg) / len_sq, 0.0, 1.0)
-				var d := w.distance_to(a + seg * t)
-				if d > reach:
-					continue
-				var bed := lerpf(beds[s], beds[s + 1], t)
-				var target: float
-				if d < half_width:
-					target = bed + bank_depth * pow(d / half_width, 2.0)
-				else:
-					target = bed + bank_depth + (d - half_width) * bank_slope
-				var i := z * VERTS + x
-				if target < heights[i]:
-					heights[i] = target
-					if d < half_width + 1.0:
-						grass_mask[i] = 0
+		var lo := Vector2(minf(a.x, b.x), minf(a.y, b.y)) - Vector2(reach, reach)
+		var hi := Vector2(maxf(a.x, b.x), maxf(a.y, b.y)) + Vector2(reach, reach)
+		var before := path[s - 1] if s > 0 else a
+		var after := path[s + 2] if s + 2 < path.size() else b
+		_record({"t": OP_CHANNEL, "a": a, "b": b, "bed_a": beds[s], "bed_b": beds[s + 1], "hw": half_width,
+			"depth": bank_depth, "slope": bank_slope, "reach": reach, "prev": before, "next": after,
+			"rect": Rect2(lo, hi - lo)})
 	return beds
 
 
 ## Raises low ground in a ring around `center` to at least `height` (a lake's rim).
 func raise_ring(center: Vector2, inner: float, outer: float, height: float) -> void:
-	var r := _world_rect(center, Vector2(outer, outer))
-	for z in range(r.position.y, r.end.y):
-		for x in range(r.position.x, r.end.x):
-			var d := grid_to_world(x, z).distance_to(center)
-			if d < inner or d > outer:
-				continue
-			var i := z * VERTS + x
-			var t := 1.0 - smoothstep(inner + (outer - inner) * 0.4, outer, d)
-			heights[i] = maxf(heights[i], lerpf(heights[i], height, t))
+	_record({"t": OP_RING, "c": center, "inner": inner, "outer": outer, "h": height,
+		"rect": Rect2(center - Vector2(outer, outer), Vector2(outer, outer) * 2.0)})
 
 
 ## Makes ground muddy (0..1) in a soft circle.
 func add_mud(center: Vector2, radius: float, amount: float) -> void:
-	var r := _world_rect(center, Vector2(radius, radius))
-	for z in range(r.position.y, r.end.y):
-		for x in range(r.position.x, r.end.x):
-			var d := grid_to_world(x, z).distance_to(center)
-			if d < radius:
-				var i := z * VERTS + x
-				mud[i] = maxf(mud[i], amount * smoothstep(radius, radius * 0.4, d))
-
-
-## Wets ground where water has flowed (called by the water sim); returns true if it changed.
-func wet_point(wx: float, wz: float, amount: float) -> void:
-	var x := clampi(roundi(wx / CELL_SIZE + CELLS * 0.5), 1, VERTS - 2)
-	var z := clampi(roundi(wz / CELL_SIZE + CELLS * 0.5), 1, VERTS - 2)
-	var changed := false
-	for dz in range(-2, 3):
-		for dx in range(-2, 3):
-			var i := (z + dz) * VERTS + x + dx
-			if mud[i] < amount:
-				mud[i] = amount
-				changed = true
-	if changed:
-		_mark_dirty_chunks(Rect2i(x - 2, z - 2, 5, 5))
-
-
-func mud_at(wx: float, wz: float) -> float:
-	var x := clampi(roundi(wx / CELL_SIZE + CELLS * 0.5), 0, VERTS - 1)
-	var z := clampi(roundi(wz / CELL_SIZE + CELLS * 0.5), 0, VERTS - 1)
-	return mud[z * VERTS + x]
+	_record({"t": OP_MUD, "c": center, "r": radius, "amount": amount,
+		"rect": Rect2(center - Vector2(radius, radius), Vector2(radius, radius) * 2.0)})
 
 
 func paint_gravel(center: Vector2, half_size: Vector2) -> void:
-	var r := _world_rect(center, half_size)
-	for z in range(r.position.y, r.end.y):
-		for x in range(r.position.x, r.end.x):
-			var i := z * VERTS + x
-			surface[i] = SURFACE_GRAVEL
-			grass_mask[i] = 0
+	_record({"t": OP_GRAVEL, "c": center, "half": half_size, "rect": Rect2(center - half_size, half_size * 2.0)})
+
+
+## Makes ground undiggable (it can still take spoil, which can be cleared off again).
+func protect(center: Vector2, half_size: Vector2) -> void:
+	_record({"t": OP_PROTECT, "c": center, "half": half_size, "rect": Rect2(center - half_size, half_size * 2.0)})
 
 
 ## Marks ground as worked soil (e.g. stockpiles) so it shows soil colour instead of grass.
 func mark_disturbed(center: Vector2, radius: float) -> void:
-	var r := _world_rect(center, Vector2(radius, radius))
-	for z in range(r.position.y, r.end.y):
-		for x in range(r.position.x, r.end.x):
-			if grid_to_world(x, z).distance_to(center) <= radius:
-				disturbed[z * VERTS + x] = 1
+	_record({"t": OP_DISTURB, "c": center, "r": radius, "rect": Rect2(center - Vector2(radius, radius), Vector2(radius, radius) * 2.0)})
 
 
 ## Stops grass growing within `radius` of `center`.
 func clear_grass(center: Vector2, radius: float) -> void:
-	var r := _world_rect(center, Vector2(radius, radius))
+	_record({"t": OP_NOGRASS, "c": center, "r": radius, "rect": Rect2(center - Vector2(radius, radius), Vector2(radius, radius) * 2.0)})
+
+
+## Adds a feature: blocks already generated get it now, the rest when they're generated.
+func _record(op: Dictionary) -> void:
+	_ops.append(op)
+	var rect: Rect2 = op.rect
+	var gx0 := clampi(floori((rect.position.x + HALF_SIZE) / OP_CELL), 0, OP_GRID - 1)
+	var gx1 := clampi(floori((rect.end.x + HALF_SIZE) / OP_CELL), 0, OP_GRID - 1)
+	var gz0 := clampi(floori((rect.position.y + HALF_SIZE) / OP_CELL), 0, OP_GRID - 1)
+	var gz1 := clampi(floori((rect.end.y + HALF_SIZE) / OP_CELL), 0, OP_GRID - 1)
+	for gz in range(gz0, gz1 + 1):
+		for gx in range(gx0, gx1 + 1):
+			_op_grid[gz * OP_GRID + gx].append(_ops.size() - 1)
+	var r := _rect_of(op.rect)
+	var c0 := Vector2i(clampi(r.position.x / GEN_CELLS, 0, GEN_CHUNKS - 1), clampi(r.position.y / GEN_CELLS, 0, GEN_CHUNKS - 1))
+	var c1 := Vector2i(clampi((r.end.x - 1) / GEN_CELLS, 0, GEN_CHUNKS - 1), clampi((r.end.y - 1) / GEN_CELLS, 0, GEN_CHUNKS - 1))
+	for cz in range(c0.y, c1.y + 1):
+		for cx in range(c0.x, c1.x + 1):
+			if _generated[cz * GEN_CHUNKS + cx] == 1:
+				_apply_op(op, _gen_rect(cx, cz).intersection(r))
+
+
+func _rect_of(world: Rect2) -> Rect2i:
+	return _world_rect(world.get_center(), world.size * 0.5)
+
+
+## Vertex range of an 8 m block (the last row/column also owns the map's far edge).
+func _gen_rect(cx: int, cz: int) -> Rect2i:
+	var x0 := cx * GEN_CELLS
+	var z0 := cz * GEN_CELLS
+	var x1 := VERTS if cx == GEN_CHUNKS - 1 else x0 + GEN_CELLS
+	var z1 := VERTS if cz == GEN_CHUNKS - 1 else z0 + GEN_CELLS
+	return Rect2i(x0, z0, x1 - x0, z1 - z0)
+
+
+## Generates every block a vertex rectangle touches.
+func _ensure(r: Rect2i) -> void:
+	var cx0 := clampi(r.position.x / GEN_CELLS, 0, GEN_CHUNKS - 1)
+	var cz0 := clampi(r.position.y / GEN_CELLS, 0, GEN_CHUNKS - 1)
+	var cx1 := clampi((r.end.x - 1) / GEN_CELLS, 0, GEN_CHUNKS - 1)
+	var cz1 := clampi((r.end.y - 1) / GEN_CELLS, 0, GEN_CHUNKS - 1)
+	for cz in range(cz0, cz1 + 1):
+		for cx in range(cx0, cx1 + 1):
+			if _generated[cz * GEN_CHUNKS + cx] == 0:
+				_generate_block(cx, cz)
+
+
+func _ensure_vertex(x: int, z: int) -> void:
+	var c := mini(z / GEN_CELLS, GEN_CHUNKS - 1) * GEN_CHUNKS + mini(x / GEN_CELLS, GEN_CHUNKS - 1)
+	if _generated[c] == 0:
+		_generate_block(c % GEN_CHUNKS, c / GEN_CHUNKS)
+
+
+func _generate_block(cx: int, cz: int) -> void:
+	_generated[cz * GEN_CHUNKS + cx] = 1
+	var r := _gen_rect(cx, cz)
 	for z in range(r.position.y, r.end.y):
 		for x in range(r.position.x, r.end.x):
-			if grid_to_world(x, z).distance_to(center) <= radius:
-				grass_mask[z * VERTS + x] = 0
+			heights[z * VERTS + x] = _base_at(x, z)
+	var area := Rect2(grid_to_world(r.position.x, r.position.y), Vector2(r.size) * CELL_SIZE)
+	for k in _ops_near(area.get_center()):
+		var op: Dictionary = _ops[k]
+		if area.intersects(op.rect):
+			_apply_op(op, r.intersection(_rect_of(op.rect)), false)
+	for z in range(r.position.y, r.end.y):
+		var row := z * VERTS
+		for x in range(r.position.x, r.end.x):
+			original[row + x] = heights[row + x]
 
 
-## True where the ground is untouched, dry and grassy.
-func has_grass(wx: float, wz: float) -> bool:
-	var x := clampi(roundi(wx / CELL_SIZE + CELLS * 0.5), 0, VERTS - 1)
-	var z := clampi(roundi(wz / CELL_SIZE + CELLS * 0.5), 0, VERTS - 1)
-	var i := z * VERTS + x
-	return grass_mask[i] == 1 and disturbed[i] == 0 and mud[i] < 0.3 and absf(original[i] - heights[i]) < 0.03
+## Applies one feature to the vertices in `r` (tight per-type loops: this runs for
+## every 8 m block that's generated). While the world is being laid out a feature added
+## to an existing block also reshapes its "original" ground.
+func _apply_op(op: Dictionary, r: Rect2i, update_original := true) -> void:
+	if r.size.x <= 0 or r.size.y <= 0:
+		return
+	var keep := update_original and _building
+	var x0 := r.position.x
+	var x1 := r.end.x
+	var t: int = op.t
+	if t == OP_MOUND or t == OP_RING or t == OP_MUD or t == OP_DISTURB or t == OP_NOGRASS:
+		var cx: float = op.c.x
+		var cz: float = op.c.y
+		var rad: float = op.get("r", op.get("outer", 0.0))
+		var rad_sq := rad * rad
+		for z in range(r.position.y, r.end.y):
+			var dz := z * CELL_SIZE - HALF_SIZE - cz
+			if absf(dz) > rad:
+				continue
+			var row := z * VERTS
+			for x in range(x0, x1):
+				var dx := x * CELL_SIZE - HALF_SIZE - cx
+				var d_sq := dx * dx + dz * dz
+				if d_sq > rad_sq:
+					continue
+				var i := row + x
+				var d := sqrt(d_sq)
+				match t:
+					OP_MOUND:
+						heights[i] += float(op.h) * 0.5 * (1.0 + cos(PI * d / rad))
+					OP_RING:
+						if d >= float(op.inner):
+							var inner: float = op.inner
+							var k := 1.0 - smoothstep(inner + (rad - inner) * 0.4, rad, d)
+							heights[i] = maxf(heights[i], lerpf(heights[i], op.h, k))
+					OP_MUD:
+						if surface[i] != SURFACE_GRAVEL:
+							mud[i] = maxf(mud[i], float(op.amount) * smoothstep(rad, rad * 0.4, d))
+					OP_DISTURB:
+						disturbed[i] = 1
+					OP_NOGRASS:
+						grass_mask[i] = 0
+				if keep:
+					original[i] = heights[i]
+	elif t == OP_FLATTEN:
+		var cx: float = op.c.x
+		var cz: float = op.c.y
+		var hx: float = op.half.x
+		var hz: float = op.half.y
+		var blend: float = op.blend
+		var level: float = op.level
+		for z in range(r.position.y, r.end.y):
+			var dz := maxf(absf(z * CELL_SIZE - HALF_SIZE - cz) - hz, 0.0)
+			var row := z * VERTS
+			for x in range(x0, x1):
+				var dx := maxf(absf(x * CELL_SIZE - HALF_SIZE - cx) - hx, 0.0)
+				var i := row + x
+				heights[i] = lerpf(heights[i], level, 1.0 - smoothstep(0.0, blend, sqrt(dx * dx + dz * dz)))
+				if keep:
+					original[i] = heights[i]
+	elif t == OP_GRAVEL or t == OP_PROTECT:
+		var cx: float = op.c.x
+		var cz: float = op.c.y
+		var hx: float = op.half.x
+		var hz: float = op.half.y
+		for z in range(r.position.y, r.end.y):
+			if absf(z * CELL_SIZE - HALF_SIZE - cz) > hz:
+				continue
+			var row := z * VERTS
+			for x in range(x0, x1):
+				if absf(x * CELL_SIZE - HALF_SIZE - cx) > hx:
+					continue
+				var i := row + x
+				if t == OP_GRAVEL:
+					surface[i] = SURFACE_GRAVEL
+					grass_mask[i] = 0
+					mud[i] = 0.0
+				else:
+					protected[i] = 1
+	elif t == OP_CHANNEL:
+		var ax: float = op.a.x
+		var az: float = op.a.y
+		var sx: float = op.b.x - ax
+		var sz: float = op.b.y - az
+		var len_sq := maxf(sx * sx + sz * sz, 0.0001)
+		var bed_a: float = op.bed_a
+		var bed_b: float = op.bed_b
+		var hw: float = op.hw
+		var depth: float = op.depth
+		var slope: float = op.slope
+		var reach: float = op.reach
+		for z in range(r.position.y, r.end.y):
+			var wz := z * CELL_SIZE - HALF_SIZE
+			var row := z * VERTS
+			for x in range(x0, x1):
+				var wx := x * CELL_SIZE - HALF_SIZE
+				var u := clampf(((wx - ax) * sx + (wz - az) * sz) / len_sq, 0.0, 1.0)
+				var px := wx - (ax + sx * u)
+				var pz := wz - (az + sz * u)
+				var d := sqrt(px * px + pz * pz)
+				if d > reach:
+					continue
+				var bed := lerpf(bed_a, bed_b, u)
+				var target := bed + depth * (d / hw) * (d / hw) if d < hw else bed + depth + (d - hw) * slope
+				var i := row + x
+				if target < heights[i]:
+					heights[i] = target
+					if d < hw + 1.0:
+						grass_mask[i] = 0
+					if keep:
+						original[i] = heights[i]
 
 
-## How far the ground at (wx, wz) has been dug below where it started.
-func dug_depth(wx: float, wz: float) -> float:
-	var x := clampi(roundi(wx / CELL_SIZE + CELLS * 0.5), 0, VERTS - 1)
-	var z := clampi(roundi(wz / CELL_SIZE + CELLS * 0.5), 0, VERTS - 1)
-	var i := z * VERTS + x
-	return original[i] - heights[i]
+## Features touching the 64 m cell around `w` (in the order they were added).
+func _ops_near(w: Vector2) -> PackedInt32Array:
+	var gx := clampi(floori((w.x + HALF_SIZE) / OP_CELL), 0, OP_GRID - 1)
+	var gz := clampi(floori((w.y + HALF_SIZE) / OP_CELL), 0, OP_GRID - 1)
+	return _op_grid[gz * OP_GRID + gx]
 
 
-## Call once after generation to build meshes and collision.
+## Distance along / from a channel segment, treating the joints smoothly.
+func _channel_distance(op: Dictionary, w: Vector2) -> float:
+	var seg: Vector2 = op.b - op.a
+	var t := clampf((w - op.a).dot(seg) / maxf(seg.length_squared(), 0.0001), 0.0, 1.0)
+	return w.distance_to(op.a + seg * t)
+
+
+func _channel_target(op: Dictionary, w: Vector2) -> float:
+	var seg: Vector2 = op.b - op.a
+	var t := clampf((w - op.a).dot(seg) / maxf(seg.length_squared(), 0.0001), 0.0, 1.0)
+	var d := w.distance_to(op.a + seg * t)
+	if d > op.reach:
+		return INF
+	var bed := lerpf(op.bed_a, op.bed_b, t)
+	if d < op.hw:
+		return bed + op.depth * pow(d / op.hw, 2.0)
+	return bed + op.depth + (d - op.hw) * op.slope
+
+
+## Ground height without generating anything (for the horizon, maps and planning):
+## the real height where the ground exists, otherwise the base plus the features.
+func sample_height(wx: float, wz: float) -> float:
+	var x := clampi(roundi(wx / CELL_SIZE + CELLS * 0.5), 0, CELLS)
+	var z := clampi(roundi(wz / CELL_SIZE + CELLS * 0.5), 0, CELLS)
+	if _generated[mini(z / GEN_CELLS, GEN_CHUNKS - 1) * GEN_CHUNKS + mini(x / GEN_CELLS, GEN_CHUNKS - 1)] == 1:
+		return heights[z * VERTS + x]
+	return _sample(x, z).x
+
+
+## (height, mud, gravel 0/1, protected 0/1) of an ungenerated vertex, from the features.
+func _sample(x: int, z: int) -> Vector4:
+	var h := _base_at(x, z)
+	var m := 0.0
+	var g := 0.0
+	var p := 0.0
+	var w := grid_to_world(x, z)
+	for k in _ops_near(w):
+		var op: Dictionary = _ops[k]
+		if not (op.rect as Rect2).has_point(w):
+			continue
+		match int(op.t):
+			OP_MOUND:
+				var d := w.distance_to(op.c)
+				if d < op.r:
+					h += op.h * 0.5 * (1.0 + cos(PI * d / op.r))
+			OP_FLATTEN:
+				var dx := maxf(absf(w.x - op.c.x) - op.half.x, 0.0)
+				var dz := maxf(absf(w.y - op.c.y) - op.half.y, 0.0)
+				h = lerpf(h, op.level, 1.0 - smoothstep(0.0, op.blend, sqrt(dx * dx + dz * dz)))
+			OP_CHANNEL:
+				h = minf(h, _channel_target(op, w))
+			OP_RING:
+				var d := w.distance_to(op.c)
+				if d >= op.inner and d <= op.outer:
+					var t := 1.0 - smoothstep(op.inner + (op.outer - op.inner) * 0.4, op.outer, d)
+					h = maxf(h, lerpf(h, op.h, t))
+			OP_MUD:
+				var d := w.distance_to(op.c)
+				if d < op.r and g < 0.5:
+					m = maxf(m, op.amount * smoothstep(op.r, op.r * 0.4, d))
+			OP_GRAVEL:
+				g = 1.0
+				m = 0.0
+			OP_PROTECT:
+				p = 1.0
+	return Vector4(h, m, g, p)
+
+
+## Height, mud and surface at a point without generating it: (height, mud, gravel, changed).
+func info_at(wx: float, wz: float) -> Vector4:
+	var x := clampi(roundi(wx / CELL_SIZE + CELLS * 0.5), 0, CELLS)
+	var z := clampi(roundi(wz / CELL_SIZE + CELLS * 0.5), 0, CELLS)
+	if _generated[mini(z / GEN_CELLS, GEN_CHUNKS - 1) * GEN_CHUNKS + mini(x / GEN_CELLS, GEN_CHUNKS - 1)] == 1:
+		var i := z * VERTS + x
+		var changed := 1.0 if disturbed[i] == 1 or absf(original[i] - heights[i]) > 0.05 else 0.0
+		return Vector4(heights[i], mud[i], float(surface[i]), changed)
+	var s := _sample(x, z)
+	return Vector4(s.x, s.y, s.z, 0.0)
+
+
+## Call once the world is laid out: sets up drawing and the horizon.
 func finalize() -> void:
-	original = heights.duplicate()
+	_building = false
 	var shader := Shader.new()
 	shader.code = SHADER
 	_material.shader = shader
-	var n := CHUNK_CELLS + 1
-	for lz in CHUNK_CELLS:
-		for lx in CHUNK_CELLS:
-			var a := lz * n + lx
-			_chunk_indices.append_array([a, a + 1, a + n + 1, a, a + n + 1, a + n])
-	for cz in CHUNKS:
-		for cx in CHUNKS:
-			var mesh_instance := MeshInstance3D.new()
-			# Rolling ground barely casts visible shadows; skipping them halves terrain draw calls.
-			mesh_instance.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
-			add_child(mesh_instance)
-			_chunk_meshes.append(mesh_instance)
-			_build_chunk(cx, cz)
-	var body := StaticBody3D.new()
-	body.collision_layer = 1
-	body.collision_mask = 0
-	add_child(body)
-	var tile_size := COLLISION_CELLS * CELL_SIZE
-	for tz in COLLISION_TILES:
-		for tx in COLLISION_TILES:
-			var shape := HeightMapShape3D.new()
-			shape.map_width = COLLISION_CELLS + 1
-			shape.map_depth = COLLISION_CELLS + 1
-			_collision_shapes.append(shape)
-			_update_collision_tile(tx, tz)
-			var collision := CollisionShape3D.new()
-			collision.shape = shape
-			collision.scale = Vector3(CELL_SIZE, 1.0, CELL_SIZE)
-			collision.position = Vector3((tx + 0.5) * tile_size - HALF_SIZE, 0, (tz + 0.5) * tile_size - HALF_SIZE)
-			body.add_child(collision)
+	_chunk_indices = _grid_indices(1)
+	for step in LOD_STEPS:
+		_chunk_lods[step * LOD_ERROR] = _grid_indices(step)
+	_collision_body = StaticBody3D.new()
+	_collision_body.collision_layer = 1
+	_collision_body.collision_mask = 0
+	add_child(_collision_body)
+	for t in FAR_TILES * FAR_TILES:
+		var mi := MeshInstance3D.new()
+		mi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+		add_child(mi)
+		_far_meshes.append(mi)
+		_far_stale[t] = true
+		_far_dirty[t] = true
+
+
+## Builds everything near `point` straight away (call before the first frame).
+func prepare_around(point: Vector3) -> void:
+	_last_focus = Vector3.INF
+	_update_near(point)
+	# The closest ground now; the rest of the detailed ring streams in over the first frames.
+	while not _near_queue.is_empty() and (_near_queue[0] as Vector2).x < 64.0:
+		_build_next_near()
+	for t in _far_dirty.keys():
+		_build_far_tile(t)
+	_far_dirty.clear()
 
 
 func grid_to_world(x: int, z: int) -> Vector2:
@@ -330,6 +601,8 @@ func get_height(wx: float, wz: float) -> float:
 	var gz := clampf(wz / CELL_SIZE + CELLS * 0.5, 0.0, CELLS - 0.001)
 	var x0 := floori(gx)
 	var z0 := floori(gz)
+	_ensure_vertex(x0, z0)
+	_ensure_vertex(x0 + 1, z0 + 1)
 	var fx := gx - x0
 	var fz := gz - z0
 	var i := z0 * VERTS + x0
@@ -348,15 +621,92 @@ func original_height(wx: float, wz: float) -> float:
 	var gz := clampf(wz / CELL_SIZE + CELLS * 0.5, 0.0, CELLS - 0.001)
 	var x0 := floori(gx)
 	var z0 := floori(gz)
+	_ensure_vertex(x0, z0)
+	_ensure_vertex(x0 + 1, z0 + 1)
 	var i := z0 * VERTS + x0
 	var top := lerpf(original[i], original[i + 1], gx - x0)
 	var bottom := lerpf(original[i + VERTS], original[i + VERTS + 1], gx - x0)
 	return lerpf(top, bottom, gz - z0)
 
 
-## Carves a bowl below `center`, removing at most `max_volume` m3. Returns volume removed.
+func _index_at(wx: float, wz: float) -> int:
+	var x := clampi(roundi(wx / CELL_SIZE + CELLS * 0.5), 0, CELLS)
+	var z := clampi(roundi(wz / CELL_SIZE + CELLS * 0.5), 0, CELLS)
+	_ensure_vertex(x, z)
+	return z * VERTS + x
+
+
+## Wets ground where water has flowed (called by the water sim).
+func wet_point(wx: float, wz: float, amount: float) -> void:
+	var x := clampi(roundi(wx / CELL_SIZE + CELLS * 0.5), 2, VERTS - 3)
+	var z := clampi(roundi(wz / CELL_SIZE + CELLS * 0.5), 2, VERTS - 3)
+	_ensure(Rect2i(x - 2, z - 2, 5, 5))
+	var changed := false
+	for dz in range(-2, 3):
+		for dx in range(-2, 3):
+			var i := (z + dz) * VERTS + x + dx
+			if mud[i] < amount and surface[i] != SURFACE_GRAVEL:
+				mud[i] = amount
+				changed = true
+	if changed:
+		# Every PC runs its own water, so wetting is redrawn here but never sent to players.
+		var record := net_record
+		net_record = false
+		_mark_dirty_chunks(Rect2i(x - 2, z - 2, 5, 5))
+		net_record = record
+
+
+func mud_at(wx: float, wz: float) -> float:
+	return mud[_index_at(wx, wz)]
+
+
+func is_gravel(wx: float, wz: float) -> bool:
+	return surface[_index_at(wx, wz)] == SURFACE_GRAVEL
+
+
+func is_protected(wx: float, wz: float) -> bool:
+	var x := clampi(roundi(wx / CELL_SIZE + CELLS * 0.5), 0, CELLS)
+	var z := clampi(roundi(wz / CELL_SIZE + CELLS * 0.5), 0, CELLS)
+	if _generated[mini(z / GEN_CELLS, GEN_CHUNKS - 1) * GEN_CHUNKS + mini(x / GEN_CELLS, GEN_CHUNKS - 1)] == 1:
+		return protected[z * VERTS + x] == 1
+	return _sample(x, z).w > 0.5
+
+
+## Lowest a vertex may be cut to.
+func _floor(i: int) -> float:
+	return original[i] if protected[i] == 1 else MIN_HEIGHT
+
+
+## True where the ground is untouched, dry and grassy.
+func has_grass(wx: float, wz: float) -> bool:
+	var i := _index_at(wx, wz)
+	return grass_mask[i] == 1 and disturbed[i] == 0 and mud[i] < 0.3 and absf(original[i] - heights[i]) < 0.03
+
+
+## How far the ground at (wx, wz) has been dug below where it started.
+func dug_depth(wx: float, wz: float) -> float:
+	var i := _index_at(wx, wz)
+	return original[i] - heights[i]
+
+
+## Volume (m3) dug out below the original ground (sign -1, counted down to `cap` deep) or
+## piled above it (sign +1) over a rectangle, or a circle if `radius` > 0.
+func soil_change(center: Vector2, half: Vector2, sign: float, cap: float, radius := 0.0) -> float:
+	var r := _world_rect(center, half)
+	_ensure(r)
+	var total := 0.0
+	for z in range(r.position.y, r.end.y):
+		for x in range(r.position.x, r.end.x):
+			if radius > 0.0 and grid_to_world(x, z).distance_to(center) > radius:
+				continue
+			var i := z * VERTS + x
+			total += clampf((heights[i] - original[i]) * sign, 0.0, cap)
+	return total * CELL_AREA
+
+
 func dig(center: Vector3, radius: float, max_volume: float) -> float:
 	var rect := _vertex_rect(center.x, center.z, radius)
+	_ensure(rect)
 	var indices := PackedInt32Array()
 	var cuts := PackedFloat32Array()
 	var total := 0.0
@@ -367,8 +717,8 @@ func dig(center: Vector3, radius: float, max_volume: float) -> float:
 			if d > radius:
 				continue
 			var t := d / radius
-			var target := maxf(center.y + t * t * radius * 0.9, MIN_HEIGHT)
 			var i := z * VERTS + x
+			var target := maxf(center.y + t * t * radius * 0.9, _floor(i))
 			var cut := heights[i] - target
 			if cut > 0.0:
 				indices.append(i)
@@ -386,8 +736,9 @@ func dig(center: Vector3, radius: float, max_volume: float) -> float:
 
 
 ## Drops `volume` m3 of soil in a cone around (wx, wz).
-func deposit(wx: float, wz: float, volume: float, radius: float) -> void:
+func deposit(wx: float, wz: float, volume: float, radius: float, material := SURFACE_SOIL) -> void:
 	var rect := _vertex_rect(wx, wz, radius)
+	_ensure(rect)
 	var indices := PackedInt32Array()
 	var weights := PackedFloat32Array()
 	var total := 0.0
@@ -402,9 +753,14 @@ func deposit(wx: float, wz: float, volume: float, radius: float) -> void:
 	if total <= 0.0:
 		return
 	for k in indices.size():
-		heights[indices[k]] += volume * weights[k] / (total * CELL_AREA)
-		disturbed[indices[k]] = 1
-		pressed[indices[k]] = 0
+		var i := indices[k]
+		heights[i] += volume * weights[k] / (total * CELL_AREA)
+		disturbed[i] = 1
+		pressed[i] = 0
+		if material == SURFACE_GRAVEL:
+			# Gravel makes firm ground: no mud, nothing sinks in.
+			surface[i] = SURFACE_GRAVEL
+			mud[i] = 0.0
 	_on_edited(rect)
 
 
@@ -420,6 +776,7 @@ func cut_flat(a: Vector3, b: Vector3, forward: Vector3, back: float, front: floa
 	var fwd := Vector2(forward.x, forward.z).normalized()
 	var mid := Vector2(a.x + b.x, a.z + b.z) * 0.5
 	var r := _world_rect(mid + fwd * (front - back) * 0.5, Vector2.ONE * (width * 0.5 + back + front))
+	_ensure(r)
 	var indices := PackedInt32Array()
 	var cuts := PackedFloat32Array()
 	var total := 0.0
@@ -431,7 +788,7 @@ func cut_flat(a: Vector3, b: Vector3, forward: Vector3, back: float, front: floa
 			if u < 0.0 or u > 1.0 or v < -back or v > front:
 				continue
 			var i := z * VERTS + x
-			var cut := heights[i] - maxf(lerpf(a.y, b.y, u), MIN_HEIGHT)
+			var cut := heights[i] - maxf(lerpf(a.y, b.y, u), _floor(i))
 			if cut > 0.0:
 				indices.append(i)
 				cuts.append(cut)
@@ -450,7 +807,7 @@ func cut_flat(a: Vector3, b: Vector3, forward: Vector3, back: float, front: floa
 
 ## Spreads `volume` m3 evenly over a band ahead of the edge `a`-`b`, from `start` to
 ## `start + length` along `forward` (the berm in front of a dozer blade).
-func deposit_strip(a: Vector3, b: Vector3, forward: Vector3, start: float, length: float, volume: float) -> void:
+func deposit_strip(a: Vector3, b: Vector3, forward: Vector3, start: float, length: float, volume: float, material := SURFACE_SOIL) -> void:
 	var edge := Vector2(b.x - a.x, b.z - a.z)
 	var width := edge.length()
 	if width < 0.01:
@@ -459,6 +816,7 @@ func deposit_strip(a: Vector3, b: Vector3, forward: Vector3, start: float, lengt
 	var fwd := Vector2(forward.x, forward.z).normalized()
 	var mid := Vector2(a.x + b.x, a.z + b.z) * 0.5 + fwd * (start + length * 0.5)
 	var r := _world_rect(mid, Vector2.ONE * (width * 0.5 + length))
+	_ensure(r)
 	var indices := PackedInt32Array()
 	var weights := PackedFloat32Array()
 	var total := 0.0
@@ -477,9 +835,13 @@ func deposit_strip(a: Vector3, b: Vector3, forward: Vector3, start: float, lengt
 	if total <= 0.0:
 		return
 	for k in indices.size():
-		heights[indices[k]] += volume * weights[k] / (total * CELL_AREA)
-		disturbed[indices[k]] = 1
-		pressed[indices[k]] = 0
+		var i := indices[k]
+		heights[i] += volume * weights[k] / (total * CELL_AREA)
+		disturbed[i] = 1
+		pressed[i] = 0
+		if material == SURFACE_GRAVEL:
+			surface[i] = SURFACE_GRAVEL
+			mud[i] = 0.0
 	_on_edited(r)
 
 
@@ -491,12 +853,13 @@ func press(center: Vector3, forward: Vector3, half_length: float, half_width: fl
 	var side := Vector2(-fwd.y, fwd.x)
 	var c := Vector2(center.x, center.z)
 	var r := _world_rect(c, Vector2.ONE * (half_length + half_width))
+	_ensure(r)
 	var changed := false
 	var squeezed := 0.0
 	for z in range(r.position.y, r.end.y):
 		for x in range(r.position.x, r.end.x):
 			var i := z * VERTS + x
-			if surface[i] == SURFACE_GRAVEL:
+			if surface[i] == SURFACE_GRAVEL or protected[i] == 1:
 				continue
 			var soft := mud[i] > 0.3
 			if pressed[i] == 1 and not soft:
@@ -527,11 +890,12 @@ func dig_in(center: Vector3, forward: Vector3, half_length: float, half_width: f
 	var side := Vector2(-fwd.y, fwd.x)
 	var c := Vector2(center.x, center.z)
 	var r := _world_rect(c, Vector2.ONE * (half_length + half_width))
+	_ensure(r)
 	var removed := 0.0
 	for z in range(r.position.y, r.end.y):
 		for x in range(r.position.x, r.end.x):
 			var i := z * VERTS + x
-			if mud[i] < 0.2 or surface[i] == SURFACE_GRAVEL:
+			if mud[i] < 0.2 or surface[i] == SURFACE_GRAVEL or protected[i] == 1:
 				continue
 			var w := grid_to_world(x, z) - c
 			if absf(w.dot(fwd)) > half_length or absf(w.dot(side)) > half_width:
@@ -581,7 +945,8 @@ func _mark_dirty(rect: Rect2i) -> void:
 	var tz1 := clampi(floori(rect.end.y / float(COLLISION_CELLS)), 0, COLLISION_TILES - 1)
 	for tz in range(tz0, tz1 + 1):
 		for tx in range(tx0, tx1 + 1):
-			_dirty_collision[tz * COLLISION_TILES + tx] = true
+			if _collision.has(tz * COLLISION_TILES + tx):
+				_dirty_collision[tz * COLLISION_TILES + tx] = true
 	_wake_rect = _wake_rect.merge(rect) if _has_wake else rect
 	_has_wake = true
 
@@ -593,7 +958,13 @@ func _mark_dirty_chunks(rect: Rect2i) -> void:
 	var cz1 := clampi(floori((rect.end.y - 1) / float(CHUNK_CELLS)), 0, CHUNKS - 1)
 	for cz in range(cz0, cz1 + 1):
 		for cx in range(cx0, cx1 + 1):
-			_dirty_chunks[cz * CHUNKS + cx] = true
+			var index := cz * CHUNKS + cx
+			if _near.has(index):
+				_dirty_chunks[index] = true
+			_far_stale[_far_tile_of(cx, cz)] = true
+			if net_record:
+				net_dirty[index] = true
+				net_changed[index] = true
 
 
 func _physics_process(delta: float) -> void:
@@ -603,8 +974,7 @@ func _physics_process(delta: float) -> void:
 	_collision_timer -= delta
 	if not _dirty_collision.is_empty() and _collision_timer <= 0.0:
 		for key in _dirty_collision.keys():
-			var index: int = key
-			_update_collision_tile(index % COLLISION_TILES, floori(index / float(COLLISION_TILES)))
+			_update_collision_tile(key)
 		_dirty_collision.clear()
 		_collision_timer = COLLISION_INTERVAL
 		if _has_wake:
@@ -614,24 +984,337 @@ func _physics_process(delta: float) -> void:
 
 
 func _process(_delta: float) -> void:
+	if _far_meshes.is_empty():
+		return
+	if focus:
+		_update_near(focus.global_position)
+	# Ground under things that need it first, then edited chunks (what you're digging must
+	# update now), then streaming, all within a few milliseconds a frame.
+	var start := Time.get_ticks_usec()
+	while not _pending_collision.is_empty():
+		var best: int = -1
+		var best_d := INF
+		for key in _pending_collision:
+			if _pending_collision[key] < best_d:
+				best_d = _pending_collision[key]
+				best = key
+		_pending_collision.erase(best)
+		_add_collision_tile(best, Time.get_ticks_msec())
+		# The close ones always go in at once; the rest a few at a time.
+		if best_d > 400.0 and Time.get_ticks_usec() - start > 3000:
+			break
 	for key in _dirty_chunks.keys():
-		var index: int = key
-		_build_chunk(index % CHUNKS, floori(index / float(CHUNKS)))
-	_dirty_chunks.clear()
+		if Time.get_ticks_usec() - start > 6000:
+			break
+		_dirty_chunks.erase(key)
+		if _near.has(key):
+			_build_chunk(key % CHUNKS, key / CHUNKS)
+	while not _near_queue.is_empty() and Time.get_ticks_usec() - start < STREAM_BUDGET_USEC:
+		_build_next_near()
+	if not _far_dirty.is_empty() and Time.get_ticks_usec() - start < STREAM_BUDGET_USEC:
+		var t: int = _far_dirty.keys()[0]
+		_far_dirty.erase(t)
+		_build_far_tile(t)
 
 
-func _update_collision_tile(tx: int, tz: int) -> void:
+# --- Detailed chunks around the camera ------------------------------------------------------
+
+func _update_near(p: Vector3) -> void:
+	if p.distance_to(_last_focus) < 6.0:
+		return
+	_last_focus = p
+	var size := CHUNK_CELLS * CELL_SIZE
+	var reach := ceili(NEAR_RADIUS / size) + 1
+	var cx := clampi(floori((p.x + HALF_SIZE) / size), 0, CHUNKS - 1)
+	var cz := clampi(floori((p.z + HALF_SIZE) / size), 0, CHUNKS - 1)
+	var wanted: Array = []
+	for z in range(maxi(cz - reach, 0), mini(cz + reach, CHUNKS - 1) + 1):
+		for x in range(maxi(cx - reach, 0), mini(cx + reach, CHUNKS - 1) + 1):
+			var d := _chunk_center(x, z).distance_to(Vector2(p.x, p.z))
+			if d < NEAR_RADIUS and not _near.has(z * CHUNKS + x):
+				wanted.append(Vector2(d, z * CHUNKS + x))
+	wanted.sort()
+	_near_queue = wanted
+	for index in _near.keys():
+		if _chunk_center(index % CHUNKS, index / CHUNKS).distance_to(Vector2(p.x, p.z)) > NEAR_RADIUS + 24.0:
+			(_near[index] as Node).queue_free()
+			_near.erase(index)
+			_dirty_chunks.erase(index)
+			_far_dirty[_far_tile_of(index % CHUNKS, index / CHUNKS)] = true
+
+
+func _build_next_near() -> void:
+	var entry: Vector2 = _near_queue.pop_front()
+	var index := int(entry.y)
+	if _near.has(index):
+		return
+	var mi := MeshInstance3D.new()
+	# Rolling ground barely casts visible shadows; skipping them halves terrain draw calls.
+	mi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	add_child(mi)
+	_near[index] = mi
+	_build_chunk(index % CHUNKS, index / CHUNKS)
+	_far_dirty[_far_tile_of(index % CHUNKS, index / CHUNKS)] = true
+
+
+func _chunk_center(cx: int, cz: int) -> Vector2:
+	var size := CHUNK_CELLS * CELL_SIZE
+	return Vector2((cx + 0.5) * size - HALF_SIZE, (cz + 0.5) * size - HALF_SIZE)
+
+
+## Triangles over every `step`-th vertex of a chunk, plus its edge skirts.
+func _grid_indices(step: int) -> PackedInt32Array:
+	var n := CHUNK_CELLS + 1
+	var indices := PackedInt32Array()
+	for lz in range(0, CHUNK_CELLS, step):
+		for lx in range(0, CHUNK_CELLS, step):
+			var a := lz * n + lx
+			indices.append_array([a, a + step, a + step * n + step, a, a + step * n + step, a + step * n])
+	# Skirt vertices follow the grid: one row per edge (top, bottom, left, right).
+	var skirt := n * n
+	for t in range(0, CHUNK_CELLS, step):
+		for edge in 4:
+			var v0: int
+			var v1: int
+			match edge:
+				0: v0 = t; v1 = t + step
+				1: v0 = CHUNK_CELLS * n + t; v1 = v0 + step
+				2: v0 = t * n; v1 = (t + step) * n
+				_: v0 = t * n + CHUNK_CELLS; v1 = (t + step) * n + CHUNK_CELLS
+			var s0 := skirt + edge * n + t
+			var s1 := s0 + step
+			indices.append_array([v0, v1, s1, v0, s1, s0])
+	return indices
+
+
+func _build_chunk(cx: int, cz: int) -> void:
+	var n := CHUNK_CELLS + 1
+	_ensure(Rect2i(cx * CHUNK_CELLS - 1, cz * CHUNK_CELLS - 1, n + 2, n + 2).intersection(_full_rect))
+	var verts := PackedVector3Array()
+	var normals := PackedVector3Array()
+	var colors := PackedColorArray()
+	var uvs := PackedVector2Array()
+	var total := n * n + 4 * n
+	verts.resize(total)
+	normals.resize(total)
+	colors.resize(total)
+	uvs.resize(total)
+	var k := 0
+	var two_cell := 2.0 * CELL_SIZE
+	# Vertex colour: natural ground, gravel, dug layers or spoil, muddied (inlined: this loop
+	# runs 4,225 times a chunk).
+	for lz in n:
+		var z := cz * CHUNK_CELLS + lz
+		var wz := z * CELL_SIZE - HALF_SIZE
+		for lx in n:
+			var x := cx * CHUNK_CELLS + lx
+			var i := z * VERTS + x
+			var h := heights[i]
+			verts[k] = Vector3(x * CELL_SIZE - HALF_SIZE, h, wz)
+			var left := heights[i - 1] if x > 0 else h
+			var right := heights[i + 1] if x < VERTS - 1 else h
+			var back := heights[i - VERTS] if z > 0 else h
+			var front := heights[i + VERTS] if z < VERTS - 1 else h
+			normals[k] = Vector3(left - right, two_cell, back - front).normalized()
+			var m := mud[i]
+			var gravel := surface[i] == SURFACE_GRAVEL
+			var dug := original[i] - h
+			var c: Color
+			if disturbed[i] == 0 and absf(dug) < 0.03:
+				c = GRAVEL if gravel else GROUND
+				c.a = 0.0
+			else:
+				if gravel:
+					c = GRAVEL.darkened(0.08)
+				elif dug <= 0.0:
+					c = LOOSE
+				elif dug < 1.0:
+					c = TOPSOIL.lerp(SUBSOIL, dug)
+				elif dug < 2.5:
+					c = SUBSOIL.lerp(CLAY, (dug - 1.0) / 1.5)
+				else:
+					c = CLAY.lerp(ROCK, clampf(dug - 2.5, 0.0, 1.0))
+				c.a = 1.0
+			if m > 0.0:
+				var a := c.a
+				c = c.lerp(MUD, m * 0.85)
+				c.a = a
+			colors[k] = c
+			uvs[k] = Vector2(m, 0.0)
+			k += 1
+	# Skirts: copies of the edge vertices, dropped down.
+	for edge in 4:
+		for t in n:
+			var src: int
+			match edge:
+				0: src = t
+				1: src = (n - 1) * n + t
+				2: src = t * n
+				_: src = t * n + n - 1
+			verts[k] = verts[src] - Vector3(0, SKIRT, 0)
+			normals[k] = normals[src]
+			colors[k] = colors[src]
+			uvs[k] = uvs[src]
+			k += 1
+	var arrays := []
+	arrays.resize(Mesh.ARRAY_MAX)
+	arrays[Mesh.ARRAY_VERTEX] = verts
+	arrays[Mesh.ARRAY_NORMAL] = normals
+	arrays[Mesh.ARRAY_COLOR] = colors
+	arrays[Mesh.ARRAY_TEX_UV] = uvs
+	arrays[Mesh.ARRAY_INDEX] = _chunk_indices
+	var mesh := ArrayMesh.new()
+	mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays, [], _chunk_lods)
+	mesh.surface_set_material(0, _material)
+	(_near[cz * CHUNKS + cx] as MeshInstance3D).mesh = mesh
+	chunk_rebuilt.emit(cx, cz)
+
+
+# --- Horizon tiles ----------------------------------------------------------------------------
+
+func _far_tile_of(cx: int, cz: int) -> int:
+	var per := FAR_TILE_CELLS / CHUNK_CELLS
+	return (cz / per) * FAR_TILES + cx / per
+
+
+## A 128 m tile of coarse ground, leaving holes where detailed chunks are drawn.
+func _build_far_tile(t: int) -> void:
+	var tx := t % FAR_TILES
+	var tz := t / FAR_TILES
+	if _far_stale.has(t) or not _far_vertices.has(t):
+		_far_stale.erase(t)
+		var verts := PackedVector3Array()
+		var colors := PackedColorArray()
+		var uvs := PackedVector2Array()
+		verts.resize(FAR_N * FAR_N)
+		colors.resize(FAR_N * FAR_N)
+		uvs.resize(FAR_N * FAR_N)
+		var k := 0
+		for lz in FAR_N:
+			for lx in FAR_N:
+				var x := tx * FAR_TILE_CELLS + lx * FAR_STEP
+				var z := tz * FAR_TILE_CELLS + lz * FAR_STEP
+				var w := grid_to_world(x, z)
+				var info := info_at(w.x, w.y)
+				verts[k] = Vector3(w.x, info.x - 0.04, w.y)
+				var c := GRAVEL if info.z > 0.5 else (LOOSE if info.w > 0.5 else GROUND)
+				c = c.lerp(MUD, info.y * 0.85)
+				c.a = info.w
+				colors[k] = c
+				uvs[k] = Vector2(info.y, 0.0)
+				k += 1
+		var normals := PackedVector3Array()
+		normals.resize(FAR_N * FAR_N)
+		for lz in FAR_N:
+			for lx in FAR_N:
+				var i := lz * FAR_N + lx
+				var l := verts[i - 1].y if lx > 0 else verts[i].y
+				var r := verts[i + 1].y if lx < FAR_N - 1 else verts[i].y
+				var b := verts[i - FAR_N].y if lz > 0 else verts[i].y
+				var f := verts[i + FAR_N].y if lz < FAR_N - 1 else verts[i].y
+				normals[i] = Vector3(l - r, 2.0 * FAR_STEP * CELL_SIZE, b - f).normalized()
+		_far_vertices[t] = [verts, normals, colors, uvs]
+	var cached: Array = _far_vertices[t]
+	# Skip the 2 m quads under detailed chunks.
+	var per := CHUNK_CELLS / FAR_STEP
+	var indices := PackedInt32Array()
+	for lz in FAR_N - 1:
+		for lx in FAR_N - 1:
+			var cx := (tx * FAR_TILE_CELLS) / CHUNK_CELLS + lx / per
+			var cz := (tz * FAR_TILE_CELLS) / CHUNK_CELLS + lz / per
+			if _near.has(cz * CHUNKS + cx):
+				continue
+			var a := lz * FAR_N + lx
+			indices.append_array([a, a + 1, a + FAR_N + 1, a, a + FAR_N + 1, a + FAR_N])
+	if indices.is_empty():
+		_far_meshes[t].mesh = null
+		return
+	var arrays := []
+	arrays.resize(Mesh.ARRAY_MAX)
+	arrays[Mesh.ARRAY_VERTEX] = cached[0]
+	arrays[Mesh.ARRAY_NORMAL] = cached[1]
+	arrays[Mesh.ARRAY_COLOR] = cached[2]
+	arrays[Mesh.ARRAY_TEX_UV] = cached[3]
+	arrays[Mesh.ARRAY_INDEX] = indices
+	var mesh := ArrayMesh.new()
+	mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
+	mesh.surface_set_material(0, _material)
+	_far_meshes[t].mesh = mesh
+
+
+# --- Collision around the things that need it ------------------------------------------------
+
+## Keeps collision tiles around each anchor: [position, radius] pairs (players, machines,
+## loose bodies). Tiles nobody has needed for a few seconds are dropped.
+func set_anchors(anchors: Array) -> void:
+	if _collision_body == null:
+		return
+	var now := Time.get_ticks_msec()
+	var size := COLLISION_CELLS * CELL_SIZE
+	for a in anchors:
+		var p: Vector3 = a[0]
+		var r: float = a[1]
+		var tx0 := clampi(floori((p.x - r + HALF_SIZE) / size), 0, COLLISION_TILES - 1)
+		var tx1 := clampi(floori((p.x + r + HALF_SIZE) / size), 0, COLLISION_TILES - 1)
+		var tz0 := clampi(floori((p.z - r + HALF_SIZE) / size), 0, COLLISION_TILES - 1)
+		var tz1 := clampi(floori((p.z + r + HALF_SIZE) / size), 0, COLLISION_TILES - 1)
+		for tz in range(tz0, tz1 + 1):
+			for tx in range(tx0, tx1 + 1):
+				var key := tz * COLLISION_TILES + tx
+				if _collision.has(key):
+					_collision[key][2] = now
+				elif not _pending_collision.has(key):
+					# Nearest-first queue, a few built a frame (see _process).
+					_pending_collision[key] = p.distance_squared_to(Vector3((tx + 0.5) * size - HALF_SIZE, p.y, (tz + 0.5) * size - HALF_SIZE))
+	for key in _collision.keys():
+		if now - int(_collision[key][2]) > 4000:
+			(_collision[key][0] as Node).queue_free()
+			_collision.erase(key)
+			_dirty_collision.erase(key)
+
+
+func has_collision_at(wx: float, wz: float) -> bool:
+	var size := COLLISION_CELLS * CELL_SIZE
+	var tx := clampi(floori((wx + HALF_SIZE) / size), 0, COLLISION_TILES - 1)
+	var tz := clampi(floori((wz + HALF_SIZE) / size), 0, COLLISION_TILES - 1)
+	return _collision.has(tz * COLLISION_TILES + tx)
+
+
+func _add_collision_tile(key: int, now: int) -> void:
+	var tx := key % COLLISION_TILES
+	var tz := key / COLLISION_TILES
+	var shape := HeightMapShape3D.new()
+	shape.map_width = COLLISION_CELLS + 1
+	shape.map_depth = COLLISION_CELLS + 1
+	var collision := CollisionShape3D.new()
+	collision.shape = shape
+	collision.scale = Vector3(CELL_SIZE, 1.0, CELL_SIZE)
+	var size := COLLISION_CELLS * CELL_SIZE
+	collision.position = Vector3((tx + 0.5) * size - HALF_SIZE, 0, (tz + 0.5) * size - HALF_SIZE)
+	_collision_body.add_child(collision)
+	_collision[key] = [collision, shape, now]
+	_update_collision_tile(key)
+
+
+func _update_collision_tile(key: int) -> void:
+	if not _collision.has(key):
+		return
+	var tx := key % COLLISION_TILES
+	var tz := key / COLLISION_TILES
 	var n := COLLISION_CELLS + 1
+	_ensure(Rect2i(tx * COLLISION_CELLS, tz * COLLISION_CELLS, n, n).intersection(_full_rect))
 	var data := PackedFloat32Array()
 	data.resize(n * n)
 	var k := 0
 	for z in n:
-		var row := (tz * COLLISION_CELLS + z) * VERTS + tx * COLLISION_CELLS
+		var row := mini(tz * COLLISION_CELLS + z, CELLS) * VERTS + tx * COLLISION_CELLS
 		for x in n:
-			data[k] = heights[row + x]
+			data[k] = heights[row + mini(x, CELLS - tx * COLLISION_CELLS)]
 			k += 1
-	_collision_shapes[tz * COLLISION_TILES + tx].map_data = data
+	(_collision[key][1] as HeightMapShape3D).map_data = data
 
+
+# --- Slumping ------------------------------------------------------------------------------
 
 ## One relaxation pass: any slope steeper than TALUS sheds soil downhill.
 func _slump_pass() -> void:
@@ -659,6 +1342,7 @@ func _slump_pass() -> void:
 	var changed := Rect2i(min_x, min_z, max_x - min_x + 1, max_z - min_z + 1)
 	_mark_dirty(changed)
 	_slump_rect = changed.grow(1).intersection(_full_rect)
+	_ensure(_slump_rect)
 
 
 func _relax(a: int, b: int) -> bool:
@@ -666,70 +1350,73 @@ func _relax(a: int, b: int) -> bool:
 	if absf(diff) <= TALUS + 0.002:
 		return false
 	var move := (diff - signf(diff) * TALUS) * 0.25
+	# Protected ground holds its shape: it only sheds spoil piled on top of it.
+	var giver := a if move > 0.0 else b
+	if protected[giver] == 1:
+		var spare := heights[giver] - original[giver]
+		if spare <= 0.0005:
+			return false
+		move = signf(move) * minf(absf(move), spare)
 	heights[a] -= move
 	heights[b] += move
 	disturbed[b if move > 0.0 else a] = 1
 	return true
 
 
-func _build_chunk(cx: int, cz: int) -> void:
+# --- Network ---------------------------------------------------------------------------------
+
+## One chunk's ground (heights, mud, dug and rutted flags, surface) for the network.
+func net_pack_chunk(index: int) -> Array:
+	var cx := index % CHUNKS
+	var cz := index / CHUNKS
 	var n := CHUNK_CELLS + 1
-	var verts := PackedVector3Array()
-	var normals := PackedVector3Array()
-	var colors := PackedColorArray()
-	var uvs := PackedVector2Array()
-	verts.resize(n * n)
-	normals.resize(n * n)
-	colors.resize(n * n)
-	uvs.resize(n * n)
+	_ensure(Rect2i(cx * CHUNK_CELLS, cz * CHUNK_CELLS, n, n).intersection(_full_rect))
+	var h := PackedFloat32Array()
+	var m := PackedFloat32Array()
+	var d := PackedByteArray()
+	var p := PackedByteArray()
+	var s := PackedByteArray()
+	h.resize(n * n)
+	m.resize(n * n)
+	d.resize(n * n)
+	p.resize(n * n)
+	s.resize(n * n)
 	var k := 0
 	for lz in n:
+		var row := mini(cz * CHUNK_CELLS + lz, CELLS) * VERTS + cx * CHUNK_CELLS
 		for lx in n:
-			var x := cx * CHUNK_CELLS + lx
-			var z := cz * CHUNK_CELLS + lz
-			var i := z * VERTS + x
-			var w := grid_to_world(x, z)
-			verts[k] = Vector3(w.x, heights[i], w.y)
-			var left := heights[i - 1] if x > 0 else heights[i]
-			var right := heights[i + 1] if x < VERTS - 1 else heights[i]
-			var back := heights[i - VERTS] if z > 0 else heights[i]
-			var front := heights[i + VERTS] if z < VERTS - 1 else heights[i]
-			normals[k] = Vector3(left - right, 2.0 * CELL_SIZE, back - front).normalized()
-			colors[k] = _vertex_color(i)
-			uvs[k] = Vector2(mud[i], 0.0)
+			var i := row + mini(lx, CELLS - cx * CHUNK_CELLS)
+			h[k] = heights[i]
+			m[k] = mud[i]
+			d[k] = disturbed[i]
+			p[k] = pressed[i]
+			s[k] = surface[i]
 			k += 1
-	var arrays := []
-	arrays.resize(Mesh.ARRAY_MAX)
-	arrays[Mesh.ARRAY_VERTEX] = verts
-	arrays[Mesh.ARRAY_NORMAL] = normals
-	arrays[Mesh.ARRAY_COLOR] = colors
-	arrays[Mesh.ARRAY_TEX_UV] = uvs
-	arrays[Mesh.ARRAY_INDEX] = _chunk_indices
-	var mesh := ArrayMesh.new()
-	mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
-	mesh.surface_set_material(0, _material)
-	_chunk_meshes[cz * CHUNKS + cx].mesh = mesh
-	chunk_rebuilt.emit(cx, cz)
+	return [index, h, m, d, p, s]
 
 
-func _vertex_color(i: int) -> Color:
-	var depth := original[i] - heights[i]
-	var c: Color
-	if disturbed[i] == 0 and absf(depth) < 0.03:
-		c = GRAVEL if surface[i] == SURFACE_GRAVEL else GROUND
-		c.a = 0.0
-	else:
-		if depth <= 0.0:
-			c = LOOSE
-		elif depth < 1.0:
-			c = TOPSOIL.lerp(SUBSOIL, depth)
-		elif depth < 2.5:
-			c = SUBSOIL.lerp(CLAY, (depth - 1.0) / 1.5)
-		else:
-			c = CLAY.lerp(ROCK, clampf(depth - 2.5, 0.0, 1.0))
-		c.a = 1.0
-	if mud[i] > 0.0:
-		var a := c.a
-		c = c.lerp(MUD, mud[i] * 0.85)
-		c.a = a
-	return c
+## Applies a chunk from the host (joining players).
+func net_apply_chunk(data: Array) -> void:
+	var index: int = data[0]
+	var cx := index % CHUNKS
+	var cz := index / CHUNKS
+	var n := CHUNK_CELLS + 1
+	_ensure(Rect2i(cx * CHUNK_CELLS, cz * CHUNK_CELLS, n, n).intersection(_full_rect))
+	var h: PackedFloat32Array = data[1]
+	var m: PackedFloat32Array = data[2]
+	var d: PackedByteArray = data[3]
+	var p: PackedByteArray = data[4]
+	var s: PackedByteArray = data[5] if data.size() > 5 else PackedByteArray()
+	var k := 0
+	for lz in n:
+		var row := mini(cz * CHUNK_CELLS + lz, CELLS) * VERTS + cx * CHUNK_CELLS
+		for lx in n:
+			var i := row + mini(lx, CELLS - cx * CHUNK_CELLS)
+			heights[i] = h[k]
+			mud[i] = m[k]
+			disturbed[i] = d[k]
+			pressed[i] = p[k]
+			if not s.is_empty():
+				surface[i] = s[k]
+			k += 1
+	_mark_dirty(Rect2i(cx * CHUNK_CELLS, cz * CHUNK_CELLS, n, n))

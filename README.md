@@ -1,6 +1,6 @@
 # Earthworks — test build
 
-Low-poly heavy machinery: dig, haul, doze and demolish. Built with Godot 4.7.
+Low-poly heavy machinery: dig, haul, doze, shred and demolish — and run the company. Built with Godot 4.7.
 
 ## Play
 - Double-click `play.bat`, or
@@ -10,81 +10,171 @@ Low-poly heavy machinery: dig, haul, doze and demolish. Built with Godot 4.7.
 Download `Earthworks-macOS.zip` from the latest **Release** on GitHub and unzip it. The app isn't
 notarized by Apple, so the first time either right-click `Earthworks.app` → **Open**, or run
 `xattr -cr Earthworks.app` in Terminal. New Mac builds are made automatically by GitHub Actions
-whenever a version tag (`v0.2.0`, …) is pushed.
+whenever a version tag (`v0.2.0`, …) is pushed. Macs start on the **Medium** graphics setting.
 
-You spawn on foot in the **construction depot** (south side of the map) next to three machines parked in their bays.
-Walk up to a cab door and press **F** (controller **X**) to climb in. F1 / Y toggles the controls panel.
+You spawn on foot in the **construction depot** next to an excavator, a bulldozer and a dump truck.
+Walk up to a cab door and press **F** (controller **X**) to climb in.
+
+| | Keyboard | Controller |
+|---|---|---|
+| Depot screen (hire machines, tools, jobs, fleet) | **Tab** | View |
+| Pause menu (controls, graphics, new career) | **Esc** | Menu |
+| Get in / out, work trailer ramps | F | X |
+| Handbrake (trucks) | Space | A |
+| Run (on foot) | Shift | L3 |
+| Winch: tap to hook, hold to reel | H | B |
+| Swap excavator tool / hitch a trailer | N or T | L3 |
+| Cab view | V | R3 |
+| Minimap: close-up / whole area | M | |
 
 **Mouse-only machine control:** hold a button and push the mouse like a joystick.
 Left drag = boom + swing (dozer: blade up/down, truck: bed), right drag = stick + bucket (dozer: blade tilt),
-both / middle drag = drive. Scroll all the way in for the cab view. Keyboard and controller work too,
-and controllers rumble while digging, pushing or stuck.
+both / middle drag = drive. Scroll all the way in for the cab view. The HUD buttons cover winch, tool,
+cab view and climbing out.
 
-## The world (288 m × 288 m)
-- Construction depot: fenced gravel yard with gate, security booth and raised barrier, weighbridge,
-  workshop shed (benches, tool boards, drums, engine hoist), two-storey site office and lunch room,
-  fuel station with canopy, concrete-block material bays (gravel / sand / topsoil), container yard,
-  wash bay, painted parking bays, parked pickups and roller, scaffolding, light towers, a practice heap
-- Borrow mound to dig just north of the yard; demolition site (houses, tower, wall) to the west
-- River down the east side, a lake to the north-west fed by a stream, and an outlet stream to the river
-- Mud along the banks, around the lake and in pits near the yard — trucks bog down, especially loaded
-- Six forests of destructible trees: hit one with a machine and it falls, leaving a stump that blocks
-  machines until you dig around its roots (about 0.4 m down) to break it free
-- Dense swaying grass that disappears where you dig
+## The company
+- **Cash** shows top left. Progress (cash, unlocks, stats, graphics setting) is saved automatically.
+- **Depot screen (Tab):**
+  - **Machines** — unlock a machine once, then deliver as many as you like (up to 14 on site) to the
+    numbered bays in the yard. **Tools** — unlock excavator buckets and the grapple.
+  - **Jobs** — the job board (three offers). Take one and it's marked in the world (posts, tape and
+    a light beam), on the minimap and in the job card: foundation dig, fill delivery, level a pad,
+    land clearing, stump removal, demolition, gravel a track, and breakdown recovery (a truck with
+    a dead engine in the mud — tow or winch it home).
+  - **Tools → Supplies** — **ground mats** ($1,200 for four), delivered by the material bays.
+  - **Fleet** — every machine on site: reset one that's tipped over, or return it to the dealer.
+- **Five shredders** around the map (the minimap shows them): drag, push, tip or drop logs and
+  stumps into the striped infeed zone and they're shredded for cash. Swamp cypress logs pay about
+  2.4× and giant oak about 3× an ordinary log ("prized log").
+
+## Multiplayer (up to 4 players)
+**Esc → Multiplayer.** One player picks a room password and presses **Host this world**; the others
+enter the host's address, the same port and password, and press **Join game**. Everyone works for
+the same company: shared cash, unlocks and jobs (saved on the host's PC). Joining swaps your world
+for the host's for the session; your own career is untouched.
+
+- **Same Wi-Fi / LAN:** join with the host's LAN address (shown on the host's Multiplayer screen).
+- **Over the internet:** install [Tailscale](https://tailscale.com) (free) on every PC, sign in to the
+  same tailnet, and join with the host's `100.x.x.x` address. No port forwarding, and only your own
+  devices can reach the game. (Port forwarding UDP 24680 also works, but Tailscale is safer.)
+- **Security:** Godot's built-in ENet networking with DTLS encryption (a fresh key every time you
+  host); the password is checked by HMAC challenge-response in both directions, so it never crosses
+  the network and a fake host can't impersonate yours; players can't message each other directly;
+  everything players send is type-checked and rate-limited; the host decides everything.
+- The host runs the simulation; other players' machines, logs and rubble follow it (20 updates a
+  second), changed ground is streamed as compressed chunks, and your controls are sent to the host
+  for the machine you're in. Each player's water is simulated on their own PC.
+- Windows/macOS may ask to allow the game through the firewall the first time you host.
+
+## The world (1 km × 1 km)
+- **Construction depot** in the middle: fenced yard with a wide 28 m gate under the company gantry, a
+  wide haul road out, delivery bays, dispatch board, workshop, offices, fuel station, material bays
+  (one of them gravel), container yard, wash bay, light towers. **The yard and the haul road can't be
+  dug up**, so the way out can never be cut off (spoil dumped on them can still be pushed off).
+- Borrow mound to dig just north of the yard; demolition yard (warehouse, block, tower, wall) to the west.
+- **The Great Swamp** (south-west, ~300 m across) and a second swamp in the north-east: deep mud,
+  standing pools and swamp cypress forests.
+- **Gravel quarry** in the south-east: benches of gravel to dig and haul. An abandoned **farm** to
+  demolish near it.
+- Big hills, three lakes, a river across the whole map plus a western river and streams, mud pits
+  everywhere, and 21 forests (about 2,900 trees: pines, broadleaves, swamp cypress, giant oaks) with a
+  dense tree line round the edge. Water has momentum: it runs downhill, surges into new channels, and
+  the surface flows visibly downstream (white water where it's fast).
+- Hit a tree with a machine and it falls, leaving a stump that blocks machines until you dig around
+  its roots (about 0.4 m down) to break it free. Felled trees and stumps are remembered across the map.
+
+### Mud, sinking, gravel and mats
+- Heavy machines **sink into mud**. A truck's wheels sink by the load on each wheel: an empty pickup
+  barely notices, a loaded dump truck parked in the swamp sinks ~0.7 m within 20 seconds, loses most
+  of its drive and needs a winch or tow (tipping the load out helps a little). Excavators and dozers
+  standing in mud settle in too and can then only crawl; driving keeps them up.
+- **Gravel** is firm ground: nothing sinks on it. Dig it at the quarry or the depot's gravel bay
+  (the bucket and HUD say GRAVEL), haul it, dump it on mud and spread it with a dozer to build roads.
+- **Ground mats**: heavy timber crane mats. Lay them on mud with the grapple (they bed in once they
+  settle) and drive across: no wheel or track sinks on a mat. Lift them out with the grapple or winch.
 
 ## Machines
-- **Excavator** (your model, scaled up 1.4× to a big-class machine, 3.5 m³ bucket): soil pushes back on the bucket; the soil heap is lofted through slices of
-  the bucket's real cavity so it fits the scoop; dump over the truck bed to load it
-- **Bulldozer**: grades a flat cut a set depth below the natural ground (lower the blade to go
-  deeper); up to 3.5 m³ rolls in front of the blade, and only an overloaded blade spills round its
-  ends (mostly off the low end when tilted). Lift the blade or reverse to drop the load as a pile. Blade tilt
-  (swing controls) for angled cuts; rear ripper (stick controls) tears furrows and loosens stumps.
-  Heavy handling: slow to accelerate, slower uphill. Tracks leave ruts. It shoves logs, stumps, barriers and stuck trucks (`tools/doze_check.gd` tests a push)
-- **Dump truck**: real wheel physics, 40 km/h top speed (32 km/h loaded) with gearing-style power,
-  speed-sensitive steering, 8 m³ bed with a heap that fits the bed, tipping bed to dump,
-  gets stuck in mud (wheels sink, grip drops, worse with a load)
+- **Excavator** (your model, scaled up 1.4×): soil pushes back on the bucket; the soil heap fits the
+  bucket; dump over a truck body to load it. Tools: 3.5 m³ bucket, 6.5 m³ bulk bucket, 1.5 m³ trench
+  bucket, tree grapple (fells trees, pulls stumps, lifts logs).
+- **Mining excavator**: the same machine at twice the size — a ~10 m³ bucket, huge reach, slower arm.
+  The **grapple** grips logs anywhere along the trunk and settles them centred across its jaws.
+- **Bulldozer** (U-blade) and **Angle dozer**, both big-class machines. Each grades a flat cut a set
+  depth below the natural ground. The U-blade's forward-turned wings carry everything straight ahead
+  (~9 m³; what won't fit piles up in front and gets pushed along). The angle blade swings ±29° with
+  the swing controls and rolls its load off the trailing end into a windrow beside the pass. Both
+  have a rear ripper. The tracks are rigid: they bridge dips, rock forward over crests, drop off
+  ledges under gravity, slide on very steep slopes, and shove trucks they drive into.
+- **Dump truck** (8 m³), **Articulated hauler** (14 m³, 6x6, big tyres, good in mud),
+  **Log truck** (tipping log bed with stakes — logs ride on it and slide off when it tips),
+  **Heavy haul tractor** (for the lowboy), **Recovery truck** (6x6, 35 m boom winch),
+  **Site pickup** (fast 4x4). All have real wheel physics, a load that raises mass and centre of
+  gravity, a handbrake, and mud that sinks the wheels.
+- **Lowboy trailer**: hitch to any truck; walk to the back and press F / X to raise or lower the
+  hydraulic ramps; tracked machines drive up and ride on the deck.
 
-- **Recovery truck**: heavy 6x6 wrecker with mud tyres, a 35 m boom winch (220 kN) and a tow hitch
-- **Lowboy trailer**: hitch to either truck (T / L3 with the hitch at its drawbar); tracked machines
-  can drive up the ramps and ride along. Walk to the back of the trailer and press **F / X** to
-  raise or lower the hydraulic ramps (raised, they stand up like a tailgate for the road)
+## Feel
+- Physics interpolation is on, so movement is smooth at any frame rate; the camera follows the
+  smoothed positions. The worker eases in and out of walking, runs, leans into the stride, and has
+  a full walk/run cycle with knees and elbows (other players' workers animate the same way).
 
-## Recovery, winches and tools
-- Every vehicle has a winch: tap **H / B** to hook the nearest vehicle, trailer, log, stump, prop or a
-  standing tree (as an anchor); hold to reel in; tap again to unhook. A winched truck drops into
-  neutral, and a steady pull breaks the mud's suction.
-- Excavator tools (**N / L3**): standard bucket, big 6.5 m³ bucket, 1.5 m³ trench bucket, and a tree
-  grapple (curl closes, dump opens) that lifts logs/props, pulls standing trees over and tears out stumps.
-- Soft mud gives way under tracks and tyres on every pass; spinning wheels and slipping tracks dig in.
-- First person in every vehicle (V / scroll in); look around with Alt + mouse, Z/C and -/=, or the D-pad.
+## Performance
+- The 1 km map is generated in 8 m blocks as you approach; nearby ground is drawn in detail, the rest
+  as a low-detail horizon; physics ground exists only around players, machines and loose objects;
+  trees far away are instanced meshes and turn into real trees as you get close.
+- Models are merged per moving part into one mesh with a shared material (colour, roughness and
+  metalness baked into the vertices), so a whole machine, the worker or the depot draws in a few
+  calls; nearby trees are real physics trees but drawn with the batched forest meshes.
+- The water simulation only visits the wet part of each tile, and only rebuilds water surfaces the
+  camera can see, nearest first (bit-for-bit the same result as visiting everything).
+- Terrain chunks have distance LODs (with skirts so seams never gap), grass thins out with distance,
+  the depot and every vehicle are batched into a few meshes per material, the distant tree ring is
+  tiled for culling, and the water simulation runs a few tiles every frame instead of in bursts.
+- **Graphics** setting in the pause menu: Low (no SSAO, short shadows, sparse grass, upscaled),
+  Medium, High.
 
 ## Code map
 | File | Purpose |
 |---|---|
-| `scripts/main.gd` | World layout, machines, enter/exit, rumble, `--autotest` |
-| `scripts/terrain.gd` | Heightmap, dig/deposit, slumping, channels, mud, gravel, tiled collision |
-| `scripts/water.gd` | Tiled shallow-water flow with sleeping tiles, river heads, mud wetting |
+| `scripts/main.gd` | World layout, fleet spawning, economy wiring, enter/exit, `--autotest` |
+| `scripts/net.gd` | Multiplayer: hosting/joining, encryption and password handshake, world sync |
+| `scripts/career.gd` | Cash, unlocks, catalogue of machines and tools, save file |
+| `scripts/jobs.gd` | Job board, job markers and progress |
+| `scripts/shredder.gd` | Wood shredder |
+| `scripts/terrain.gd` | Heightmap, dig/deposit, slumping, channels, mud, protected ground, LOD chunks |
+| `scripts/water.gd` | Tiled shallow-water flow with momentum, sleeping tiles, river heads, flow-map shader |
 | `scripts/excavator.gd` / `excavator_model.gd` | Excavator and the rig for `models/excavator.glb` |
 | `scripts/bulldozer.gd` | Bulldozer |
-| `scripts/truck.gd` | Dump truck and recovery truck |
+| `scripts/truck.gd` | All the wheeled trucks (one script, several kinds) |
 | `scripts/trailer.gd` | Lowboy trailer with hydraulic ramps |
-| `scripts/model_kit.gd` | Shared modelling helpers (rounded boxes, prisms, wheels, paint/glass/hazard materials) used by the built-in vehicle and worker models |
+| `scripts/model_kit.gd` | Shared modelling helpers (rounded boxes, prisms, wheels, materials) and mesh batching |
+| `scripts/hud.gd` / `minimap.gd` / `menu.gd` | HUD, minimap, depot and pause menus |
 | `scripts/winch.gd` | Winch and cable |
 | `scripts/tree.gd` | Destructible tree / stump |
-| `scripts/scenery.gd` | Tree meshes, forests, loading-zone props |
+| `scripts/forests.gd` | Every tree on the map: species, felled/stump state, streaming live trees in and out |
+| `scripts/scenery.gd` | Tree meshes, the depot, the quarry |
 | `scripts/grass.gd` | Grass streamed around the camera |
 | `scripts/machine_fx.gd` | Exhaust, dust, mud spray, track meshes |
 | `scripts/player.gd` | Worker on foot / seated operator |
 | `scripts/buildings.gd` | Destructible block buildings |
 | `scripts/mouse_controls.gd` / `input_setup.gd` | Mouse joystick and keyboard/controller bindings |
-| `scripts/follow_camera.gd` / `hud.gd` | Camera and UI |
-| `tools/*.gd` | Dev tools: model inspection, `doze_check.gd`, `feature_check.gd` (winch/trailer/grapple) |
+| `scripts/follow_camera.gd` | Camera |
+| `tools/*.gd` | Dev checks and model tools |
 
-## Automated check
+## Automated checks
 ```
 Godot_v4.7.2-stable_win64_console.exe --headless --path . -- --autotest
+Godot_v4.7.2-stable_win64_console.exe --headless --path . -s tools/feature_check.gd
+Godot_v4.7.2-stable_win64_console.exe --headless --path . -s tools/gameplay_check.gd
 ```
-Digs and loads the truck, dozes into a forest, drives a loaded truck into mud, walks — printing stats.
+The autotest digs and loads a truck, dozes, drives a loaded truck into mud. `feature_check` covers
+mud ruts, the recovery winch, trailer towing and the grapple; `gameplay_check` covers delivering
+every machine, the shredder, jobs, the protected depot, the log truck, dozer gravity and pushing;
+`machines_check` covers both dozer blades, the grapple's grip and the mining excavator;
+`bigmap_check` covers sinking in the swamp, ground mats, quarry gravel, prized logs and stumps
+streaming back in.
+Checks never touch your save. `tools/net_check.gd` runs a host and a client as two processes on
+this PC (`-- --role=host`, then `-- --role=client`; `--role=badclient` tries a wrong password).
 
 ## Credits
 - Excavator model: ["Excavator"](https://sketchfab.com/3d-models/excavator-c00f6295235349e3b60885a9efa45629)

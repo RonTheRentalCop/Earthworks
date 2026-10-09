@@ -7,6 +7,8 @@ extends RefCounted
 static var _meshes := {}
 static var _materials := {}
 static var _hazard: ShaderMaterial
+static var _plain: ShaderMaterial
+static var _plain_test := StandardMaterial3D.new()
 
 const HAZARD_SHADER := """
 shader_type spatial;
@@ -73,6 +75,115 @@ static func hazard() -> ShaderMaterial:
 		_hazard = ShaderMaterial.new()
 		_hazard.shader = shader
 	return _hazard
+
+
+## One material for every plain painted surface: colour, roughness and metalness come
+## from each vertex (COLOR, UV2), so parts of any colour merge into a single draw call.
+## Lit exactly like a StandardMaterial3D with those settings.
+const PLAIN_SHADER := """
+shader_type spatial;
+void fragment() {
+	vec3 c = COLOR.rgb;
+	ALBEDO = mix(c / 12.92, pow((c + 0.055) / 1.055, vec3(2.4)), step(vec3(0.04045), c));
+	ROUGHNESS = UV2.x;
+	METALLIC = UV2.y;
+	SPECULAR = 0.5;
+}
+"""
+
+
+static func plain_material() -> ShaderMaterial:
+	if _plain == null:
+		var shader := Shader.new()
+		shader.code = PLAIN_SHADER
+		_plain = ShaderMaterial.new()
+		_plain.shader = shader
+	return _plain
+
+
+## A StandardMaterial3D that's only a colour, roughness and metalness (no textures,
+## transparency, glow or special modes), so it can be baked into plain_material().
+static func is_plain(mat: Material) -> bool:
+	var m := mat as StandardMaterial3D
+	if m == null:
+		return false
+	var d := _plain_test
+	return m.transparency == d.transparency and m.cull_mode == d.cull_mode and m.shading_mode == d.shading_mode \
+			and not m.emission_enabled and m.albedo_texture == null and not m.normal_enabled \
+			and not m.vertex_color_use_as_albedo and not m.rim_enabled and not m.clearcoat_enabled \
+			and not m.ao_enabled and m.metallic_specular == d.metallic_specular and m.billboard_mode == d.billboard_mode \
+			and m.diffuse_mode == d.diffuse_mode and m.specular_mode == d.specular_mode and not m.no_depth_test \
+			and m.metallic_texture == null and m.roughness_texture == null and not m.heightmap_enabled \
+			and not m.backlight_enabled and not m.subsurf_scatter_enabled and not m.refraction_enabled \
+			and not m.detail_enabled and not m.use_point_size and m.grow == false and m.albedo_color.a >= 1.0
+
+
+## One mesh from many [mesh, transform, StandardMaterial3D] parts, every part's material
+## written into its vertices for plain_material().
+static func plain_mesh(parts: Array) -> ArrayMesh:
+	var verts := PackedVector3Array()
+	var normals := PackedVector3Array()
+	var colors := PackedColorArray()
+	var uv2 := PackedVector2Array()
+	var indices := PackedInt32Array()
+	for part in parts:
+		var mesh: Mesh = part[0]
+		var xform: Transform3D = part[1]
+		var mat: StandardMaterial3D = part[2]
+		var normal_basis := xform.basis.inverse().transposed()
+		var flip := xform.basis.determinant() < 0.0
+		for surface in mesh.get_surface_count():
+			var arrays := mesh.surface_get_arrays(surface)
+			var v: PackedVector3Array = arrays[Mesh.ARRAY_VERTEX]
+			var n = arrays[Mesh.ARRAY_NORMAL]
+			var idx = arrays[Mesh.ARRAY_INDEX]
+			var base := verts.size()
+			var c := mat.albedo_color
+			var rm := Vector2(mat.roughness, mat.metallic)
+			for k in v.size():
+				verts.append(xform * v[k])
+				normals.append((normal_basis * n[k]).normalized() if n != null and n.size() > k else Vector3.UP)
+				colors.append(c)
+				uv2.append(rm)
+			if idx == null or (idx as PackedInt32Array).is_empty():
+				for k in range(0, v.size() - 2, 3):
+					if flip:
+						indices.append_array([base + k, base + k + 2, base + k + 1])
+					else:
+						indices.append_array([base + k, base + k + 1, base + k + 2])
+			else:
+				var ii: PackedInt32Array = idx
+				for k in range(0, ii.size() - 2, 3):
+					if flip:
+						indices.append_array([base + ii[k], base + ii[k + 2], base + ii[k + 1]])
+					else:
+						indices.append_array([base + ii[k], base + ii[k + 1], base + ii[k + 2]])
+	var arrays := []
+	arrays.resize(Mesh.ARRAY_MAX)
+	arrays[Mesh.ARRAY_VERTEX] = verts
+	arrays[Mesh.ARRAY_NORMAL] = normals
+	arrays[Mesh.ARRAY_COLOR] = colors
+	arrays[Mesh.ARRAY_TEX_UV2] = uv2
+	arrays[Mesh.ARRAY_INDEX] = indices
+	var out := ArrayMesh.new()
+	if not verts.is_empty():
+		out.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
+		out.surface_set_material(0, plain_material())
+	return out
+
+
+## The same mesh in one plain_material() surface, if every surface's material is plain
+## (a tree's trunk and foliage then draw in one call); otherwise the mesh unchanged.
+static func flatten_plain(mesh: ArrayMesh) -> ArrayMesh:
+	var parts := []
+	for surface in mesh.get_surface_count():
+		var mat := mesh.surface_get_material(surface)
+		if not is_plain(mat):
+			return mesh
+		var single := ArrayMesh.new()
+		single.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, mesh.surface_get_arrays(surface))
+		parts.append([single, Transform3D.IDENTITY, mat])
+	return plain_mesh(parts)
 
 
 # --- Meshes -----------------------------------------------------------------------------
@@ -224,7 +335,69 @@ static func wheel(parent: Node3D, radius: float, width: float, rim: Color, outwa
 	for k in 6:
 		var angle := TAU * k / 6.0
 		axle(node, 0.025, 0.06, Vector3(hub_x + 0.03 * outward, cos(angle) * radius * 0.22, sin(angle) * radius * 0.22), metal(Color(0.75, 0.75, 0.75)), 6)
+	merge_tree(node)
 	return node
+
+
+# --- Batching ---------------------------------------------------------------------------
+
+## Merges the plain mesh parts directly under each node of the tree into one mesh per
+## material (a model built from hundreds of small parts then draws in a handful of calls).
+## Moving sub-assemblies keep working, since each node's own children merge separately.
+## Skipped: parts that are hidden, have children, have no mesh yet, or have meta "keep".
+static func merge_tree(root: Node) -> void:
+	for child in root.get_children():
+		if not child is MeshInstance3D or child.get_child_count() > 0:
+			merge_tree(child)
+	_merge_children(root)
+
+
+static func _merge_children(node: Node) -> void:
+	var groups := {}
+	var plain: Array = []
+	for child in node.get_children():
+		var mi := child as MeshInstance3D
+		if mi == null or mi.mesh == null or not mi.visible or mi.get_child_count() > 0 or mi.has_meta("keep"):
+			continue
+		if mi.mesh.get_surface_count() != 1 or mi.cast_shadow != GeometryInstance3D.SHADOW_CASTING_SETTING_ON:
+			continue
+		var mat := mi.material_override if mi.material_override else mi.get_active_material(0)
+		if mat == null:
+			continue
+		if is_plain(mat):
+			plain.append(mi)
+			continue
+		if not groups.has(mat):
+			groups[mat] = []
+		groups[mat].append(mi)
+	if plain.size() >= 2:
+		var parts := []
+		for mi in plain:
+			var m := mi as MeshInstance3D
+			parts.append([m.mesh, m.transform, m.material_override if m.material_override else m.get_active_material(0)])
+		var merged_plain := MeshInstance3D.new()
+		merged_plain.mesh = plain_mesh(parts)
+		node.add_child(merged_plain)
+		for mi in plain:
+			node.remove_child(mi)
+			(mi as Node).queue_free()
+	elif plain.size() == 1:
+		var only := plain[0] as MeshInstance3D
+		groups[only.material_override if only.material_override else only.get_active_material(0)] = plain
+	for mat in groups:
+		var parts: Array = groups[mat]
+		if parts.size() < 2:
+			continue
+		var tool := SurfaceTool.new()
+		for mi in parts:
+			tool.append_from((mi as MeshInstance3D).mesh, 0, (mi as MeshInstance3D).transform)
+		var merged := MeshInstance3D.new()
+		merged.mesh = tool.commit()
+		merged.material_override = mat
+		node.add_child(merged)
+		for mi in parts:
+			node.remove_child(mi)
+			(mi as Node).queue_free()
 
 
 static func label(parent: Node3D, text: String, pos: Vector3, pixel: float, color: Color, yaw := 0.0) -> Label3D:

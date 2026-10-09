@@ -22,6 +22,12 @@ var tension := 0.0
 var _target_point := Vector3.ZERO  # in the target's local space
 var _cable: MeshInstance3D
 var _reeling := false
+## Multiplayer: on joining players' machines the winch only draws the cable.
+var puppet := false
+## Resolves a network id to a node (set by main on joining players' machines).
+static var resolve: Callable
+## Network id of a node (set by main on the host).
+static var identify: Callable
 
 
 func _ready() -> void:
@@ -96,7 +102,36 @@ func reel(on: bool) -> void:
 	_reeling = on
 
 
+## Multiplayer: [target id, hook point on the target, cable length] ("" = not hooked).
+func net_state() -> Array:
+	if not is_attached() or not identify.is_valid():
+		return [""]
+	return [identify.call(target), _target_point, length]
+
+
+func apply_net_state(s: Array) -> void:
+	puppet = true
+	var id := String(s[0])
+	if id == "" or not resolve.is_valid():
+		if target:
+			detach()
+		return
+	var node: Node3D = resolve.call(id)
+	if node == null:
+		return
+	target = node
+	_target_point = s[1]
+	length = s[2]
+	_cable.visible = true
+
+
 func _physics_process(delta: float) -> void:
+	if puppet:
+		if is_attached():
+			_draw_cable(global_position, _target_world())
+		elif _cable.visible:
+			_cable.visible = false
+		return
 	if not is_attached():
 		if _cable.visible:
 			detach()
@@ -117,6 +152,9 @@ func _physics_process(delta: float) -> void:
 		# Tell the far end it's being pulled (a parked truck knocks its brakes off).
 		target.set_meta("winched_until", Time.get_ticks_msec() + 250)
 		var target_body := target as RigidBody3D
+		if target_body and target_body.has_meta("bedded") and tension > 2000.0:
+			target_body.remove_meta("bedded")  # a bedded ground mat comes loose
+			target_body.freeze = false
 		if target_body and not target_body.freeze:
 			target_body.apply_force(-pull, b - target_body.global_position)
 		var own := vehicle as RigidBody3D

@@ -9,25 +9,27 @@ extends CharacterBody3D
 const Terrain = preload("res://scripts/terrain.gd")
 const ExcavatorModel = preload("res://scripts/excavator_model.gd")
 const Water = preload("res://scripts/water.gd")
+const Kit = preload("res://scripts/model_kit.gd")
 const Winch = preload("res://scripts/winch.gd")
 const MachineFx = preload("res://scripts/machine_fx.gd")
 
 ## Swappable tools on the end of the stick. Buckets scale the real bucket; the grapple
 ## replaces it with a pair of jaws (curl closes, dump opens) that hang plumb.
 const ATTACHMENTS := [
-	{"name": "Bucket 3.5 m³", "scale": 1.0, "capacity": 3.5},
-	{"name": "Big bucket 6.5 m³", "scale": 1.25, "capacity": 6.5},
-	{"name": "Trench bucket 1.5 m³", "scale": 0.75, "capacity": 1.5},
+	{"name": "Bucket", "scale": 1.0, "capacity": 3.5},
+	{"name": "Bulk bucket", "scale": 1.25, "capacity": 6.5},
+	{"name": "Trench bucket", "scale": 0.75, "capacity": 1.5},
 	{"name": "Tree grapple", "scale": 1.0, "capacity": 0.0},
 ]
 const JAW_RATE := 1.6
 const GRAB_RADIUS := 1.9
 const GRAB_MASS := 4000.0  # heaviest loose thing the grapple will lift
+const GRIP_CENTRE := Vector3(0, -1.1, 0)  # between the closed jaws, grapple space
 
 const MAX_SPEED := 4.5
 const ACCELERATION := 4.0
 const TURN_RATE := 0.9
-const SCALE := 1.4  # a big-class excavator: the model is scaled up this much
+const SCALE := 1.4  # the standard machine: the model is scaled up this much
 const SWING_RATE := 0.75
 const BOOM_RATE := 0.55
 const STICK_RATE := 0.75
@@ -64,8 +66,22 @@ var terrain: Terrain
 ## Optional, for splashes when dumping into water.
 var water: Water
 var driven := false
+## True builds only the model (shop thumbnails).
+var preview := false
+## Set before adding to the tree: how much the model is scaled (1.4 standard, 2.0 the
+## mining excavator). Bucket size, digging rate and reach all grow with it.
+var size_scale := SCALE
+## Attachments the player owns (indices into ATTACHMENTS).
+var allowed_attachments: Array = [0, 1, 2, 3]
 ## Mouse joystick output (mouse_controls.gd): positive action name -> -1..1.
 var mouse_input := {}
+## Multiplayer: `remote` = driven by another player's controls (remote_axes, sent from
+## their machine); `puppet` = a copy on a joining player's machine that follows the host.
+var remote := false
+var remote_axes := {}
+var puppet := false
+var _net_xform := Transform3D()
+var _net_has := false
 ## Operator's eye (cab view) and seat, both riding on the cab.
 var eye: Node3D
 var seat: Node3D
@@ -78,6 +94,9 @@ var held: RigidBody3D
 ## Trucks (truck.gd) whose beds catch soil dumped over them.
 var receivers: Array = []
 var bucket_load := 0.0
+## What's in the bucket (Terrain.SURFACE_SOIL / SURFACE_GRAVEL), by majority.
+var bucket_material := 0
+var _gravel_in_bucket := 0.0
 var soil_moved := 0.0
 var stalled := false  # soil is currently stopping the bucket
 
@@ -107,16 +126,31 @@ var _heap: MeshInstance3D
 var _heap_fill := -1.0
 var _capacity := BUCKET_CAPACITY
 var _dig_radius := DIG_RADIUS
+var _k := 1.0  # size relative to the standard machine
 var _grapple: Node3D
 var _jaws: Array[Node3D] = []
 var _jaw := 0.0  # 0 open .. 1 closed
 var _held_parent: Node
+var _grip_from := Transform3D()  # held thing relative to the grapple, as grabbed...
+var _grip_to := Transform3D()  # ...and settled in the jaws
+var _grip_t := 1.0
 var _platform: Node3D
 var _platform_last := Transform3D()
 var _last_rut := Transform3D()
+var _net_joints := Vector4.ZERO
+var _net_tilt := Vector3.ZERO
+var _net_dug := false
+var _sink_timer := 0.0
+## How far (m) the tracks have sunk into mud, beyond the mud's own softness.
+var bog := 0.0
 
 
 func _ready() -> void:
+	_k = size_scale / SCALE
+	_capacity = BUCKET_CAPACITY * _k * _k * _k
+	_dig_radius = DIG_RADIUS * _k
+	if _k > 1.05:
+		machine_name = "Mining excavator"
 	collision_layer = BODY_LAYER
 	collision_mask = SOLID_MASK
 	motion_mode = CharacterBody3D.MOTION_MODE_FLOATING
@@ -134,8 +168,13 @@ func _ready() -> void:
 	_stick.rotation.x = rest.y
 	_bucket.rotation.x = rest.z
 
-	_visual.scale = Vector3.ONE * SCALE
-	var hull: Vector3 = (_rig.hull as Vector3) * SCALE
+	_visual.scale = Vector3.ONE * size_scale
+	if preview:
+		_update_pistons()
+		set_physics_process(false)
+		set_process(false)
+		return
+	var hull: Vector3 = (_rig.hull as Vector3) * size_scale
 	var hull_center := Vector3(0, hull.y * 0.5 + 0.2, 0)
 	_add_collision(self, hull, hull_center)
 	# Kinematic hull: the machine bulldozes through debris instead of stalling on it.
@@ -149,10 +188,12 @@ func _ready() -> void:
 	seat = _node(cab, _rig.seat)
 	_build_dirt_fx()
 	_build_grapple()
+	# Parts that move together draw as one mesh (a few calls per joint instead of ~45).
+	Kit.merge_tree(_visual)
 	winch = Winch.new()
 	winch.vehicle = self
 	winch.max_force = 160000.0
-	winch.position = Vector3(0, 1.0, (_rig.track as Vector2).x * SCALE + 0.4)
+	winch.position = Vector3(0, 1.0, (_rig.track as Vector2).x * size_scale + 0.4)
 	add_child(winch)
 	add_to_group("winchable")
 	set_meta("label", "excavator")
@@ -162,6 +203,9 @@ func _ready() -> void:
 
 
 func _physics_process(delta: float) -> void:
+	if puppet:
+		_puppet_step(delta)
+		return
 	_ride_platform()
 	_dug = 0.0
 	var saved_xform := global_transform
@@ -199,6 +243,7 @@ func _physics_process(delta: float) -> void:
 	else:
 		_spill(delta)
 	_rut()
+	_sink_in(delta)
 	_update_pistons()
 	_update_load_visual()
 	_animate(delta)
@@ -209,10 +254,12 @@ func reset() -> void:
 
 
 func place(xform: Transform3D) -> void:
+	bog = 0.0
 	global_transform = xform
 	_speed = 0.0
 	_joint_velocity = Vector4.ZERO
 	_follow_ground(0.0, true)
+	reset_physics_interpolation()
 
 
 ## The tracks press ruts as the machine travels or turns.
@@ -222,21 +269,30 @@ func _rut() -> void:
 	if moved < 0.2 and turned < 0.05:
 		return
 	_last_rut = global_transform
-	var track: Vector2 = (_rig.track as Vector2) * SCALE
+	var track: Vector2 = (_rig.track as Vector2) * size_scale
 	var fwd := -global_basis.z
 	for side in [-1.0, 1.0]:
-		terrain.press(global_position + global_basis.x * side * track.y, fwd, track.x + 0.2, TRACK_WIDTH * SCALE * 0.5, RUT_DEPTH)
+		terrain.press(global_position + global_basis.x * side * track.y, fwd, track.x + 0.2, TRACK_WIDTH * size_scale * 0.5, RUT_DEPTH)
 
 
 ## Swaps to the next attachment (only with an empty bucket / open grapple).
 func cycle_attachment() -> String:
 	if bucket_load > 0.05 or held:
 		return "Empty the bucket first"
-	attachment = (attachment + 1) % ATTACHMENTS.size()
+	var next := attachment
+	for _step in ATTACHMENTS.size():
+		next = (next + 1) % ATTACHMENTS.size()
+		if next in allowed_attachments:
+			break
+	return set_attachment(next)
+
+
+func set_attachment(index: int) -> String:
+	attachment = index
 	var a: Dictionary = ATTACHMENTS[attachment]
 	var grapple: bool = a.capacity <= 0.0
-	_capacity = a.capacity
-	_dig_radius = DIG_RADIUS * float(a.scale)
+	_capacity = float(a.capacity) * _k * _k * _k
+	_dig_radius = DIG_RADIUS * float(a.scale) * _k
 	_bucket.scale = Vector3.ONE * float(a.scale)
 	for child in _bucket.get_children():
 		if child is MeshInstance3D:
@@ -247,28 +303,32 @@ func cycle_attachment() -> String:
 	_jaw = 0.0
 	if not grapple:
 		_bucket.rotation.x = clampf(_bucket.rotation.x, (_rig.bucket_limits as Vector2).x, (_rig.bucket_limits as Vector2).y)
-	return String(a.name)
+	return "%s%s" % [a.name, "" if _capacity <= 0.0 else " %.1f m³" % _capacity]
 
 
 ## Closing the jaws on something grabs it: loose logs, stumps, props and debris get
 ## picked up; a standing tree is pulled over and held; a rooted stump is torn out.
-func _operate_grapple(_delta: float) -> void:
+func _operate_grapple(delta: float) -> void:
 	for k in _jaws.size():
 		_jaws[k].rotation.x = lerpf(0.95, 0.05, _jaw) * (1.0 if k == 0 else -1.0)
-	var centre := _grapple.to_global(Vector3(0, -1.25, 0))
+	var centre := _grapple.to_global(GRIP_CENTRE)
 	if held and (_jaw < 0.5 or not is_instance_valid(held)):
 		_release()
+	elif held and _grip_t < 1.0:
+		# Settle the load into the jaws.
+		_grip_t = minf(_grip_t + delta / 0.25, 1.0)
+		held.global_transform = _grapple.global_transform * _grip_from.interpolate_with(_grip_to, smoothstep(0.0, 1.0, _grip_t))
 	elif held == null and _jaw > 0.85:
 		var best: Node3D = null
-		var best_d := GRAB_RADIUS
+		var best_d := GRAB_RADIUS * _k
 		for node in get_tree().get_nodes_in_group("winchable"):
 			var thing := node as Node3D
 			if thing == null or thing == self or thing is VehicleBody3D or thing is CharacterBody3D:
 				continue
 			var rigid := thing as RigidBody3D
-			if rigid and rigid.mass > GRAB_MASS:
+			if rigid and rigid.mass > GRAB_MASS * _k * _k * _k:
 				continue
-			var grab_at := thing.global_position + (Vector3(0, 0.6, 0) if thing.is_in_group("trees") else Vector3.ZERO)
+			var grab_at := thing.global_position + Vector3(0, 0.6, 0) if thing.is_in_group("trees") else _grip_point(thing, centre)
 			var d := grab_at.distance_to(centre)
 			if d < best_d:
 				best_d = d
@@ -282,9 +342,45 @@ func _operate_grapple(_delta: float) -> void:
 func _grab(body: RigidBody3D) -> void:
 	held = body
 	_held_parent = body.get_parent()
+	var centre := _grapple.to_global(GRIP_CENTRE)
+	var grip_local := body.to_local(_grip_point(body, centre))
+	body.remove_meta("awaiting_ground")
+	body.remove_meta("bedded")
 	body.freeze_mode = RigidBody3D.FREEZE_MODE_KINEMATIC
 	body.freeze = true
 	body.reparent(_grapple, true)
+	# Where it should end up: the grip point between the jaws; a log lies across them
+	# (its trunk along the grapple's X axis, whichever way round is nearer).
+	var jaws := _grapple.global_transform.orthonormalized()
+	var basis := body.global_basis.orthonormalized()
+	if body.has_meta("grip") and (body.get_meta("grip") as Array)[0] != (body.get_meta("grip") as Array)[1]:
+		# Turn the shortest way so its long axis (logs, mats) lies across the jaws.
+		var g: Array = body.get_meta("grip")
+		var axis := (basis * ((g[1] as Vector3) - (g[0] as Vector3))).normalized()
+		var across := jaws.basis.x.normalized()
+		if axis.dot(across) < 0.0:
+			across = -across
+		if axis.cross(across).length() > 0.0001:
+			basis = Basis(Quaternion(axis, across)) * basis
+	var settled := Transform3D(basis, Vector3.ZERO)
+	settled.origin = centre - settled.basis * grip_local
+	_grip_from = _grapple.global_transform.affine_inverse() * body.global_transform
+	_grip_to = _grapple.global_transform.affine_inverse() * settled
+	_grip_t = 0.0
+
+
+## The point on `body` nearest `near` that a grapple can hold: anywhere along a log's
+## trunk, the middle of anything else.
+func _grip_point(body: Node3D, near: Vector3) -> Vector3:
+	if not body.has_meta("grip"):
+		return body.global_position
+	var g: Array = body.get_meta("grip")
+	var a := body.to_global(g[0])
+	var b := body.to_global(g[1])
+	var ab := b - a
+	if ab.length_squared() < 0.0001:
+		return a
+	return a + ab * clampf((near - a).dot(ab) / ab.length_squared(), 0.0, 1.0)
 
 
 func _release() -> void:
@@ -313,6 +409,86 @@ func _build_grapple() -> void:
 	_grapple.visible = false
 
 
+## Multiplayer state (host -> joining players).
+func net_state() -> Array:
+	return [_joints(), bucket_load, attachment, _jaw, _track_travel, _speed, _joint_velocity, stalled, driven,
+		_dug > 0.0, _spilling, _spill_point, _visual.rotation, winch.net_state()]
+
+
+func apply_net_state(xform: Transform3D, s: Array) -> void:
+	_net_xform = xform
+	if not _net_has:
+		_net_has = true
+		global_transform = xform
+	_net_joints = s[0]
+	bucket_load = s[1]
+	if int(s[2]) != attachment:
+		set_attachment(int(s[2]))
+	_jaw = s[3]
+	_track_travel = s[4]
+	_speed = s[5]
+	_joint_velocity = s[6]
+	stalled = s[7]
+	driven = s[8]
+	_net_dug = s[9]
+	_spilling = s[10]
+	_spill_point = s[11]
+	_net_tilt = s[12]
+	winch.apply_net_state(s[13])
+
+
+func _puppet_step(delta: float) -> void:
+	if not _net_has:
+		return
+	var t := 1.0 - exp(-14.0 * delta)
+	global_transform = global_transform.interpolate_with(_net_xform, t)
+	var j := _joints()
+	_set_joints(Vector4(lerp_angle(j.x, _net_joints.x, t), lerpf(j.y, _net_joints.y, t), lerpf(j.z, _net_joints.z, t), lerpf(j.w, _net_joints.w, t)))
+	_visual.rotation.x = lerp_angle(_visual.rotation.x, _net_tilt.x, t)
+	_visual.rotation.z = lerp_angle(_visual.rotation.z, _net_tilt.z, t)
+	for k in _jaws.size():
+		_jaws[k].rotation.x = lerpf(0.95, 0.05, _jaw) * (1.0 if k == 0 else -1.0)
+	_dug = DIG_RATE * delta * 0.5 if _net_dug else 0.0
+	_update_pistons()
+	_update_load_visual()
+	_animate(delta)
+
+
+## Heavy tracks slowly press down into soft mud (faster standing still); a deeply sunk
+## machine can only crawl. Mats, decks and gravel stay firm.
+func _sink_in(delta: float) -> void:
+	_sink_timer -= delta
+	if _platform != null:
+		bog = move_toward(bog, 0.0, delta * 0.5)
+		return
+	if _sink_timer > 0.0:
+		return
+	_sink_timer = 0.5
+	var mud := terrain.mud_at(global_position.x, global_position.z)
+	if mud < 0.3:
+		bog = move_toward(bog, 0.0, 0.5 * 0.4)
+		return
+	# Standing still the weight presses the tracks deeper; driving they slowly climb out.
+	if absf(_speed) < 0.2:
+		bog = minf(bog + 0.5 * 0.025 * mud * _k, 0.55 * mud * _k)
+	else:
+		bog = maxf(bog - 0.5 * 0.03, 0.0)
+	if winch.is_attached() and winch.tension > 1000.0:
+		bog = maxf(bog - 0.5 * 0.1, 0.0)
+	var track: Vector2 = (_rig.track as Vector2) * size_scale
+	var press := 0.004 * mud * _k * (2.0 if absf(_speed) < 0.2 else 1.0)
+	for side in [-1.0, 1.0]:
+		terrain.dig_in(global_position + global_basis.x * side * track.y, -global_basis.z, track.x,
+				TRACK_WIDTH * size_scale * 0.5, press, 0.3 + 0.5 * mud * _k)
+
+
+## Top-speed factor for how deep the tracks have sunk.
+func _sunk_factor() -> float:
+	if _platform != null:
+		return 1.0
+	return 1.0 - clampf((bog - 0.15) / 0.5, 0.0, 0.65)
+
+
 ## Where soil leaves the bucket when it's tipped.
 func spill_point() -> Vector3:
 	return _bucket.to_global(_rig.load_center)
@@ -331,6 +507,8 @@ func bucket_tilt() -> float:
 func _axis(negative: StringName, positive: StringName) -> float:
 	if not driven:
 		return 0.0
+	if remote:
+		return clampf(float(remote_axes.get(positive, 0.0)) - float(remote_axes.get(negative, 0.0)), -1.0, 1.0)
 	return clampf(Input.get_axis(negative, positive) + float(mouse_input.get(positive, 0.0)), -1.0, 1.0)
 
 
@@ -362,13 +540,31 @@ func status_fill() -> float:
 	return _jaw if _grapple.visible else bucket_load / _capacity
 
 
+## What the HUD shows for this machine.
+func hud_info() -> Dictionary:
+	var info := {"speed": absf(_speed) * 3.6, "max_speed": MAX_SPEED * 3.6, "flags": [String(ATTACHMENTS[attachment].name).to_upper()]}
+	if _grapple.visible:
+		info.load = _jaw
+		info.load_text = "GRAPPLE  " + ("HOLDING " + String(held.get_meta("label", "load")).to_upper() if is_instance_valid(held) else ("CLOSED" if _jaw > 0.8 else "OPEN"))
+	else:
+		info.load = bucket_load / _capacity
+		info.load_text = "BUCKET %.2f / %.1f m³%s" % [bucket_load, _capacity, "  GRAVEL" if bucket_material == Terrain.SURFACE_GRAVEL and bucket_load > 0.05 else ""]
+	if stalled:
+		info.flags.append("CUTTING")
+	if winch.is_attached():
+		info.flags.append("WINCH %.0f m" % winch.length)
+	if bog > 0.15:
+		info.flags.append("SUNK %.1f m" % bog)
+	return info
+
+
 func _drive(delta: float) -> void:
 	var mud := terrain.mud_at(global_position.x, global_position.z)
-	_speed = move_toward(_speed, _axis("drive_back", "drive_forward") * MAX_SPEED * (1.0 - MUD_SLOW * mud), ACCELERATION * delta)
+	_speed = move_toward(_speed, _axis("drive_back", "drive_forward") * MAX_SPEED * (1.0 - MUD_SLOW * mud) * _sunk_factor(), ACCELERATION * delta)
 	var turn := _axis("turn_right", "turn_left") * TURN_RATE * (1.0 - 0.4 * mud)
 	rotate_y(turn * delta)
 	# Skid steer: turning slows one track and speeds up the other.
-	var track: Vector2 = (_rig.track as Vector2) * SCALE
+	var track: Vector2 = (_rig.track as Vector2) * size_scale
 	_track_travel += Vector2(_speed - turn * track.y, _speed + turn * track.y) * delta
 	velocity = -global_basis.z * _speed
 	move_and_slide()
@@ -378,10 +574,10 @@ func _drive(delta: float) -> void:
 func _operate_arm(delta: float) -> void:
 	var curl_sign: float = _rig.curl_sign
 	var target := Vector4(
-		_axis("swing_right", "swing_left") * SWING_RATE,
-		_axis("boom_down", "boom_up") * BOOM_RATE,
-		_axis("stick_in", "stick_out") * STICK_RATE,
-		_axis("bucket_dump", "bucket_curl") * BUCKET_RATE * curl_sign)
+		_axis("swing_right", "swing_left") * SWING_RATE / sqrt(_k),
+		_axis("boom_down", "boom_up") * BOOM_RATE / sqrt(_k),
+		_axis("stick_in", "stick_out") * STICK_RATE / sqrt(_k),
+		_axis("bucket_dump", "bucket_curl") * BUCKET_RATE * curl_sign / sqrt(_k))
 	_joint_velocity = _joint_velocity.lerp(target, 1.0 - exp(-JOINT_RESPONSE * delta))
 	cab.rotation.y = wrapf(cab.rotation.y + _joint_velocity.x * delta, -PI, PI)
 	_boom.rotation.x = _clamp_joint(_boom.rotation.x + _joint_velocity.y * delta, _rig.boom_limits)
@@ -412,7 +608,7 @@ func _set_joints(j: Vector4) -> void:
 
 ## Sits the machine on the terrain and tilts it to match the ground under the tracks.
 func _follow_ground(delta: float, instant: bool) -> void:
-	var track: Vector2 = (_rig.track as Vector2) * SCALE
+	var track: Vector2 = (_rig.track as Vector2) * size_scale
 	var fwd := -global_basis.z * track.x
 	var side := global_basis.x * track.y
 	var p := global_position
@@ -424,7 +620,7 @@ func _follow_ground(delta: float, instant: bool) -> void:
 	var pitch := atan2((fl + fr) - (bl + br), 4.0 * track.x)
 	var roll := atan2((fr + br) - (fl + bl), 4.0 * track.y)
 	var t := 1.0 if instant else 1.0 - exp(-8.0 * delta)
-	var sink := MUD_SINK * terrain.mud_at(p.x, p.z)
+	var sink := 0.0 if _platform != null else MUD_SINK * terrain.mud_at(p.x, p.z) * _k + bog
 	global_position.y = lerpf(p.y, (fl + fr + bl + br) * 0.25 - sink, t)
 	_visual.rotation.x = lerp_angle(_visual.rotation.x, pitch, t)
 	_visual.rotation.z = lerp_angle(_visual.rotation.z, roll, t)
@@ -476,13 +672,17 @@ func _penetration() -> float:
 ## one can only cut DIG_RATE per second.
 func _dig(delta: float, before: float) -> bool:
 	if not _grapple.visible and bucket_load < _capacity - 0.001:
-		var budget := minf(_capacity - bucket_load, DIG_RATE * delta)
+		var budget := minf(_capacity - bucket_load, DIG_RATE * _k * _k * _k * delta)
 		for local in _rig.carve_points + _rig.block_points:
 			var p := _bucket.to_global(local)
 			if budget > 0.0 and p.y < _ground(p):
+				var gravel := terrain.is_gravel(p.x, p.z)
 				var removed := terrain.dig(p, _dig_radius, budget)
 				_dug += removed
 				bucket_load += removed
+				if gravel:
+					_gravel_in_bucket += removed
+				_set_bucket_material(Terrain.SURFACE_GRAVEL if _gravel_in_bucket > bucket_load * 0.5 else Terrain.SURFACE_SOIL)
 				budget -= removed
 	var after := _penetration()
 	return after > PENETRATION_TOLERANCE and after > before + 0.001
@@ -501,17 +701,18 @@ func _spill(delta: float) -> void:
 	_spilling = bucket_load > 0.0 and bucket_tilt() < DUMP_THRESHOLD and not _buried()
 	if not _spilling:
 		return
-	var amount := minf(bucket_load, DUMP_RATE * delta)
+	var amount := minf(bucket_load, DUMP_RATE * _k * _k * _k * delta)
 	var p := _bucket.to_global(_rig.load_center)
 	_spill_point = p
+	_gravel_in_bucket = maxf(_gravel_in_bucket - amount * (_gravel_in_bucket / maxf(bucket_load, 0.001)), 0.0)
 	bucket_load -= amount
 	soil_moved += amount
 	for truck in receivers:
 		if truck.accepts_soil(p):
-			amount -= truck.add_soil(amount)
+			amount -= truck.add_soil(amount, bucket_material)
 			break
 	if amount > 0.0:
-		terrain.deposit(p.x, p.z, amount, DUMP_RADIUS)
+		terrain.deposit(p.x, p.z, amount, DUMP_RADIUS * _k, bucket_material)
 
 
 ## Aims each hydraulic cylinder half at the pin it connects to.
@@ -531,13 +732,13 @@ func _animate(delta: float) -> void:
 	_time += delta
 	var tracks: Dictionary = _rig.get("tracks", {})
 	if not tracks.is_empty():
-		var loop: float = float(_rig.track_loop) * SCALE
+		var loop: float = float(_rig.track_loop) * size_scale
 		_track_travel = Vector2(fposmod(_track_travel.x, loop), fposmod(_track_travel.y, loop))
 		# Moving forward, the top run of each track travels toward the front.
-		(tracks.left as ShaderMaterial).set_shader_parameter("scroll", -_track_travel.x / SCALE)
-		(tracks.right as ShaderMaterial).set_shader_parameter("scroll", -_track_travel.y / SCALE)
+		(tracks.left as ShaderMaterial).set_shader_parameter("scroll", -_track_travel.x / size_scale)
+		(tracks.right as ShaderMaterial).set_shader_parameter("scroll", -_track_travel.y / size_scale)
 		for wheel in _rig.wheels:
-			(wheel as Node3D).rotation.x = -_track_travel.y / (float(_rig.wheel_radius) * SCALE)
+			(wheel as Node3D).rotation.x = -_track_travel.y / (float(_rig.wheel_radius) * size_scale)
 	if _rig.has("linkage"):
 		ExcavatorModel.update_linkage(_rig.linkage)
 
@@ -769,10 +970,20 @@ func _build_exhaust(parent: Node3D, pos: Vector3) -> GPUParticles3D:
 
 ## Soil in the bucket. With the real model it's lofted through slices of the bucket's
 ## own cavity so it fits the scoop; the placeholder bucket gets a lumpy dome.
+## Gravel shows grey in the bucket.
+func _set_bucket_material(what: int) -> void:
+	if what == bucket_material:
+		return
+	bucket_material = what
+	if _heap:
+		_heap.material_override = _material(Color(0.58, 0.56, 0.52) if what == Terrain.SURFACE_GRAVEL else SOIL)
+
+
 func _build_load_visual() -> void:
 	if _rig.has("cavity") and not (_rig.cavity.rings as Array).is_empty():
 		_load_pivot = _node(_bucket, Vector3.ZERO)
 		_heap = MeshInstance3D.new()
+		_heap.set_meta("keep", true)
 		_heap.material_override = _material(SOIL)
 		_load_pivot.add_child(_heap)
 		_load_pivot.visible = false

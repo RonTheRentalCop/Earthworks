@@ -52,12 +52,12 @@ func _initialize() -> void:
 
 	# --- Trailer: hitch to the recovery truck, park the dozer on the deck, tow both.
 	var trailer = main.trailer
-	rec.place(Transform3D(Basis(Vector3.UP, PI), Vector3(0, t.get_height(0, 40) + 0.4, 40)))
+	rec.place(Transform3D(Basis(Vector3.UP, PI), Vector3(0, t.get_height(0, 50) + 0.4, 50)))
 	await _frames(20)
 	var hitch: Vector3 = rec.hitch_point()
 	trailer.place_behind(hitch, rec.global_basis)
 	await _frames(20)
-	main._use_utility()
+	main._press_utility()
 	print("trailer hitched: ", trailer.towed_by == rec)
 	var dozer = main.dozer
 	var deck: Vector3 = trailer.deck_centre()
@@ -83,8 +83,7 @@ func _initialize() -> void:
 		names.append(ex.cycle_attachment())
 	print("attachments: ", names, "  big bucket capacity was 6.5")
 	await _frames(10)
-	var tree = main.trees[0]
-	var log: RigidBody3D = tree.fell(Vector3.FORWARD)
+	var log: RigidBody3D = main.forests.apply_event(0, "fell", main)
 	await _frames(5)
 	log.global_position = ex._grapple.to_global(Vector3(0, -1.25, 0)) - Vector3(0, 0.4, 0)
 	log.linear_velocity = Vector3.ZERO
