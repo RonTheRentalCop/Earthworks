@@ -28,6 +28,8 @@ const Net = preload("res://scripts/net.gd")
 const Winch = preload("res://scripts/winch.gd")
 const Forests = preload("res://scripts/forests.gd")
 const Kit = preload("res://scripts/model_kit.gd")
+const WorldSave = preload("res://scripts/world_save.gd")
+const AUTOSAVE_INTERVAL := 60.0
 ## Where supplies (ground mats) are dropped at the depot (depot space).
 const SUPPLY_PAD := Vector2(-24, -4)
 
@@ -135,6 +137,9 @@ var _winch_states := {}  # peer -> winch button state (1 = this machine)
 var _pending_body_id := -1  # joining player: id to give the next log/stump a tree spawns
 var _anchor_timer := 0.0
 var _joining := false
+var _changed_areas: Array[Rect2] = []  # ground changed this frame (see _settle_bodies...)
+var _restoring := false  # putting a saved world back: no stats or job progress for it
+var _autosave_timer := AUTOSAVE_INTERVAL
 var _autotest := false
 var _time := 0.0
 var _next_report := 1.0
@@ -391,11 +396,20 @@ func _ready() -> void:
 	apply_quality(career.quality)
 	menu.new_career.connect(func() -> void:
 		career.new_game()
+		WorldSave.erase()
 		get_tree().reload_current_scene())
 	menu.host_requested.connect(_on_host_requested)
 	menu.join_requested.connect(_on_join_requested)
 	menu.leave_requested.connect(func() -> void: net.leave())
 	net.players_changed.connect(_on_players_changed)
+	# From here on every change to the ground is kept for the world save; put the saved
+	# world back (your own game only: never in tests or someone else's world).
+	terrain.record_edits = true
+	if career.persistent:
+		_restoring = true
+		if WorldSave.restore(self):
+			print("Earthworks: restored the saved world (%d changed ground chunks)" % terrain.edited.size())
+		_restoring = false
 	_update_anchors()
 	terrain.prepare_around(player.global_position)
 	print("Earthworks: %.0f m map, %d trees, %d blocks, %d job sites, built in %d ms" % [
@@ -1016,6 +1030,8 @@ func _build_forests(rng: RandomNumberGenerator) -> void:
 	forests.body_spawned.connect(_on_tree_body)
 	forests.felled.connect(func(_tid: int) -> void: trees_felled += 1)
 	forests.stump_freed.connect(func(_tid: int) -> void:
+		if _restoring:
+			return
 		stumps_cleared += 1
 		career.stats.stumps = int(career.stats.stumps) + 1
 		if jobs:
@@ -1069,8 +1085,18 @@ func _hold_until_grounded() -> void:
 			b.freeze_mode = b.get_meta("awaiting_ground")
 			b.remove_meta("awaiting_ground")
 			b.freeze = false
-		if not b.freeze:
+		if b.freeze:
+			continue
+		if bodies.has(b.get_meta("body_id", -1)) or b in debris:
 			_unbury(b)
+		else:
+			# Machines sink into mud and ruts by design, so only catch a real fall-through.
+			var p2 := b.global_position
+			var ground := terrain.sample_height(p2.x, p2.z)
+			if p2.y < ground - 2.5:
+				b.global_position = Vector3(p2.x, ground + 1.5, p2.z)
+				b.linear_velocity = Vector3.ZERO
+				b.angular_velocity = Vector3.ZERO
 
 
 ## The ground's collision only pushes things up from above, so anything that ends up
@@ -1101,6 +1127,17 @@ func _unbury(b: RigidBody3D) -> void:
 		b.sleeping = false
 
 
+## Keeps the world save fresh (your own game only) and writes it on the way out.
+func save_world() -> void:
+	if career.persistent and not net.is_client():
+		WorldSave.save(self)
+
+
+func _notification(what: int) -> void:
+	if what == NOTIFICATION_WM_CLOSE_REQUEST:
+		save_world()
+
+
 func _unhandled_input(event: InputEvent) -> void:
 	if menu == null or menu.is_open:
 		return
@@ -1118,8 +1155,13 @@ func _unhandled_input(event: InputEvent) -> void:
 		get_viewport().set_input_as_handled()
 
 
-func _process(_delta: float) -> void:
+func _process(delta: float) -> void:
+	_autosave_timer -= delta
+	if _autosave_timer <= 0.0:
+		_autosave_timer = AUTOSAVE_INTERVAL
+		save_world()
 	if Input.is_action_just_pressed("restart") and not net.is_online():
+		save_world()
 		get_tree().reload_current_scene()
 		return
 	if Input.is_action_just_pressed("reset_vehicle") and _driving:
@@ -1260,6 +1302,7 @@ func _rumble() -> void:
 
 
 func _physics_process(delta: float) -> void:
+	_settle_bodies_on_changed_ground()
 	_anchor_timer -= delta
 	if _anchor_timer <= 0.0:
 		_anchor_timer = 0.25
@@ -1373,27 +1416,40 @@ func _add_demolition_site(site_name: String, center: Vector2, blocks: Array[Rigi
 func _on_terrain_changed(rect: Rect2) -> void:
 	if net and net.is_client():
 		return
-	var area := rect.grow(1.5)
-	for body in debris:
-		if not is_instance_valid(body):
-			continue
-		var p := body.global_position
-		if area.has_point(Vector2(p.x, p.z)):
-			body.sleeping = false
-			_unbury(body)
-	# Logs, stumps and mats too (a log reaches up to ~9 m from its base, so test its middle):
-	# they settle into holes dug under them and come up on top of soil dumped over them.
-	var reach := area.grow(5.0)
+	# Collected and handled once a frame: one pass over the loose bodies however many
+	# patches of ground changed (many at once when soil settles at several sites).
+	_changed_areas.append(rect)
+
+
+## Wakes and unburies loose bodies (rubble, logs, stumps, mats) on ground that changed, so
+## they drop into holes dug under them and come up on top of soil dumped over them, and
+## frees stumps whose roots have been dug out.
+func _settle_bodies_on_changed_ground() -> void:
+	if _changed_areas.is_empty():
+		return
+	const GRID_M := 8.0
+	var hit := {}
+	for rect in _changed_areas:
+		# A log reaches up to ~9 m from its base, so take in the bodies around too.
+		var area: Rect2 = rect.grow(6.5)
+		for gz in range(floori(area.position.y / GRID_M), floori(area.end.y / GRID_M) + 1):
+			for gx in range(floori(area.position.x / GRID_M), floori(area.end.x / GRID_M) + 1):
+				hit[Vector2i(gx, gz)] = true
+	_changed_areas.clear()
 	for id in bodies:
 		var b: RigidBody3D = bodies[id]
-		if not is_instance_valid(b) or b.freeze or b in debris:
+		if not is_instance_valid(b) or b.freeze:
 			continue
 		var p := b.global_position
-		if reach.has_point(Vector2(p.x, p.z)):
+		if hit.has(Vector2i(floori(p.x / GRID_M), floori(p.z / GRID_M))):
 			b.sleeping = false
 			_unbury(b)
-	for tree in forests.live_stumps_in(area):
-		tree.check_roots(terrain)
+	for tid in forests.live:
+		var tree: Node3D = forests.live[tid]
+		if is_instance_valid(tree) and tree.is_stump:
+			var p := tree.global_position
+			if hit.has(Vector2i(floori(p.x / GRID_M), floori(p.z / GRID_M))):
+				tree.check_roots(terrain)
 
 
 func _build_environment() -> void:

@@ -17,7 +17,7 @@ extends Node
 signal status_changed(text: String)
 signal players_changed
 
-const VERSION := "earthworks-net-1"
+const VERSION := "earthworks-net-2"  # bump whenever the messages change: mismatched games refuse politely
 const DEFAULT_PORT := 24680
 const MAX_PLAYERS := 4
 const STATE_INTERVAL := 0.05  # 20 updates a second
@@ -56,6 +56,12 @@ var _body_targets := {}  # body id -> Transform3D (joining players)
 var _requests := {}  # peer -> [window start msec, count]
 var _puppets := {}  # peer -> Player puppet
 var _loaded := {}  # peers that have loaded the snapshot and take the live streams
+## Changed ground still to send each joining player (chunk indices), a few per tick after
+## the snapshot: a well-worked world is many megabytes, too much for one message.
+var _terrain_out := {}
+const GROUND_BYTES_PER_BATCH := 12000
+const GROUND_BATCHES_IN_FLIGHT := 2
+var _ground_unacked := {}  # peer -> batches sent but not yet confirmed
 var _remote_inputs := {}  # peer -> {axes, winch}
 
 
@@ -292,6 +298,8 @@ func _on_peer_disconnected(id: int) -> void:
 	main.remote_exit(id)
 	players.erase(id)
 	_loaded.erase(id)
+	_terrain_out.erase(id)
+	_ground_unacked.erase(id)
 	_remote_inputs.erase(id)
 	if _puppets.has(id):
 		_puppets[id].queue_free()
@@ -325,6 +333,7 @@ func _physics_process(delta: float) -> void:
 func _host_tick(delta: float) -> void:
 	for peer in _remote_inputs:
 		main.remote_input(peer, _remote_inputs[peer].axes, _remote_inputs[peer].winch)
+	_send_ground()
 	if _loaded.is_empty():
 		return
 	_state_timer -= delta
@@ -360,7 +369,7 @@ func _host_tick(delta: float) -> void:
 		if not t.net_dirty.is_empty():
 			var chunks := []
 			for index in t.net_dirty:
-				chunks.append(t.net_pack_chunk(index))
+				chunks.append(t.net_pack_delta(index))
 			t.net_dirty.clear()
 			var raw := var_to_bytes(chunks)
 			rpc("_rx_terrain", raw.compress(FileAccess.COMPRESSION_ZSTD), raw.size())
@@ -368,6 +377,31 @@ func _host_tick(delta: float) -> void:
 	if _jobs_timer <= 0.0 and not main.jobs.active.is_empty():
 		_jobs_timer = JOBS_INTERVAL
 		send_jobs()
+
+
+## Streams the changed ground to players who've just joined, packed as it goes (so a
+## chunk changed meanwhile goes out as it is now). Paced by what the player has actually
+## received: bursts bigger than their network buffer get dropped, and the resends would
+## hold up every other message to them.
+func _send_ground() -> void:
+	for peer in _terrain_out.keys():
+		var queue: Array = _terrain_out[peer]
+		if not peer in multiplayer.get_peers() or queue.is_empty():
+			_terrain_out.erase(peer)
+			continue
+		if int(_ground_unacked.get(peer, 0)) >= GROUND_BATCHES_IN_FLIGHT:
+			continue  # wait for the player to confirm what they've got
+		var chunks := []
+		var bytes := 0
+		while not queue.is_empty() and bytes < GROUND_BYTES_PER_BATCH:
+			var index := int(queue.pop_back())
+			var waiting = main.terrain._pending_chunks.get(index)
+			var chunk: Array = waiting if waiting != null else main.terrain.net_pack_delta(index)
+			chunks.append(chunk)
+			bytes += var_to_bytes(chunk).size() / 6  # roughly what it compresses to
+		var raw := var_to_bytes(chunks)
+		_ground_unacked[peer] = int(_ground_unacked.get(peer, 0)) + 1
+		rpc_id(peer, "_rx_ground", raw.compress(FileAccess.COMPRESSION_ZSTD), raw.size())
 
 
 ## Live updates go only to players who have finished loading.
@@ -535,9 +569,7 @@ func _send_snapshot(peer: int) -> void:
 				mats.append([id, main.bodies[id].global_transform])
 			else:
 				loose.append([id, main.bodies[id].global_transform])
-	var chunks := []
-	for index in main.terrain.net_changed:
-		chunks.append(main.terrain.net_pack_chunk(index))
+	var chunks := []  # (the changed ground follows on its own, see _send_ground)
 	var shredded := []
 	for s in main.shredders:
 		shredded.append(s.total_shredded)
@@ -586,11 +618,23 @@ func _tx_player(state: Array) -> void:
 	_puppet_for(peer).apply_net_state(state)
 
 
+@rpc("any_peer", "call_remote", "reliable", 3)
+func _tx_ground_ack() -> void:
+	var peer := _sender()
+	if peer != 0:
+		_ground_unacked[peer] = maxi(int(_ground_unacked.get(peer, 0)) - 1, 0)
+
+
 @rpc("any_peer", "call_remote", "reliable")
 func _tx_loaded() -> void:
 	var peer := _sender()
 	if peer != 0:
 		_loaded[peer] = true
+		# Now the changed ground: every chunk since the world was built (the host's save too).
+		var changed: Dictionary = main.terrain.edited.duplicate()
+		changed.merge(main.terrain.net_changed)
+		changed.merge(main.terrain._pending_chunks)  # saved changes to ground not visited yet
+		_terrain_out[peer] = changed.keys()
 
 
 @rpc("any_peer", "call_remote", "reliable")
@@ -668,7 +712,19 @@ func _rx_bodies(data: PackedFloat32Array) -> void:
 			_body_targets[id] = Transform3D(Basis(q), Vector3(data[i + 1], data[i + 2], data[i + 3]))
 
 
-@rpc("authority", "call_remote", "reliable")
+# The changed ground after joining, batch by batch; each is confirmed so the host sends
+# the next only when this one's in (on its own channel, so it never holds up the rest).
+@rpc("authority", "call_remote", "reliable", 3)
+func _rx_ground(data: PackedByteArray, size: int) -> void:
+	if not _from_host():
+		return
+	for chunk in bytes_to_var(data.decompress(size, FileAccess.COMPRESSION_ZSTD)):
+		main.terrain.net_apply_chunk(chunk)
+	rpc_id(1, "_tx_ground_ack")
+
+
+# Its own channel: ground streaming never holds up the other messages behind it.
+@rpc("authority", "call_remote", "reliable", 3)
 func _rx_terrain(data: PackedByteArray, size: int) -> void:
 	if not _from_host():
 		return

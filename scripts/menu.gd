@@ -407,7 +407,7 @@ func _fill_pause() -> void:
 			["CONTROLS", open_controls], ["GRAPHICS:  " + quality_name, _cycle_quality]]
 	if not main.net.is_client():
 		items.append(["NEW CAREER", _ask_new])
-	items.append(["QUIT TO DESKTOP", func() -> void: get_tree().quit()])
+	items.append(["QUIT TO DESKTOP", _quit])
 	for item in items:
 		var b := _button(item[0], 19)
 		b.custom_minimum_size = Vector2(0, 50)
@@ -535,6 +535,13 @@ func _field(box: Control, title: String, value: String, secret: bool) -> LineEdi
 	edit.add_theme_stylebox_override("focus", style)
 	box.add_child(edit)
 	return edit
+
+
+## Saves the world (your own game) and closes the game.
+func _quit() -> void:
+	if main.has_method("save_world"):
+		main.save_world()
+	get_tree().quit()
 
 
 func _ask_new() -> void:

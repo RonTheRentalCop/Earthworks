@@ -3,14 +3,15 @@
 Low-poly heavy machinery: dig, haul, doze, shred and demolish — and run the company. Built with Godot 4.7.
 
 ## Play
-- Double-click `play.bat`, or
-- Open Godot, **Import** this folder, press **F5**.
+- **Windows:** download `Earthworks-Windows.zip` from the latest **Release** on GitHub, unzip it and
+  run `Earthworks.exe` (it isn't signed, so SmartScreen may ask: **More info → Run anyway**).
+- From the source: double-click `play.bat`, or open Godot, **Import** this folder and press **F5**.
 
 ### Mac (Apple Silicon or Intel)
 Download `Earthworks-macOS.zip` from the latest **Release** on GitHub and unzip it. The app isn't
 notarized by Apple, so the first time either right-click `Earthworks.app` → **Open**, or run
-`xattr -cr Earthworks.app` in Terminal. New Mac builds are made automatically by GitHub Actions
-whenever a version tag (`v0.2.0`, …) is pushed. Macs start on the **Medium** graphics setting.
+`xattr -cr Earthworks.app` in Terminal. New Mac and Windows builds are made automatically by
+GitHub Actions whenever a version tag (`v0.2.0`, …) is pushed. Macs start on the **Medium** graphics setting.
 
 You spawn on foot in the **construction depot** next to an excavator, a bulldozer and a dump truck.
 Walk up to a cab door and press **F** (controller **X**) to climb in.
@@ -34,6 +35,10 @@ cab view and climbing out.
 
 ## The company
 - **Cash** shows top left. Progress (cash, unlocks, stats, graphics setting) is saved automatically.
+- **The world is saved too:** every hole, pile, rut and gravel road, felled trees and pulled stumps,
+  the logs and stumps lying about, demolition rubble and ground mats. It saves every minute and when
+  you quit, and comes back next time. **New career** (pause menu) starts a fresh world. When you
+  join someone else's game you play in their world and your own save is left alone.
 - **Depot screen (Tab):**
   - **Machines** — unlock a machine once, then deliver as many as you like (up to 14 on site) to the
     numbered bays in the yard. **Tools** — unlock excavator buckets and the grapple.
@@ -62,8 +67,11 @@ for the host's for the session; your own career is untouched.
   the network and a fake host can't impersonate yours; players can't message each other directly;
   everything players send is type-checked and rate-limited; the host decides everything.
 - The host runs the simulation; other players' machines, logs and rubble follow it (20 updates a
-  second), changed ground is streamed as compressed chunks, and your controls are sent to the host
-  for the machine you're in. Each player's water is simulated on their own PC.
+  second), and your controls are sent to the host for the machine you're in. Each player's water
+  is simulated on their own PC.
+- Joining a well-worked world (yours, from your save) is quick: the ground is sent as just the
+  difference from untouched ground, in small batches each confirmed by the joining player, on its
+  own channel so it never holds up anything else; far-off changes are put in when that ground loads.
 - Windows/macOS may ask to allow the game through the firewall the first time you host.
 
 ## The world (1 km × 1 km)
@@ -174,8 +182,11 @@ every machine, the shredder, jobs, the protected depot, the log truck, dozer gra
 `bigmap_check` covers sinking in the swamp, ground mats, quarry gravel, prized logs and stumps
 streaming back in. `trees_check` fells every species and buries logs under dumped soil to check nothing
 ever ends up under the ground.
-Checks never touch your save. `tools/net_check.gd` runs a host and a client as two processes on
-this PC (`-- --role=host`, then `-- --role=client`; `--role=badclient` tries a wrong password).
+`save_check` digs, gravels, fells, pulls a stump, moves rubble and lays mats, saves, rebuilds the
+world and checks it all comes back. Checks never touch your save. `tools/net_check.gd` runs a host
+and players as separate processes on this PC (`-- --role=host`, then `-- --role=client`;
+`--role=idleclient` adds another player, `--role=badclient` tries a wrong password, and
+`-- --role=host --bigdig` digs holes all over the map first, like a long-played save).
 
 ## Credits
 - Excavator model: ["Excavator"](https://sketchfab.com/3d-models/excavator-c00f6295235349e3b60885a9efa45629)

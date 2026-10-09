@@ -37,6 +37,26 @@ func _host() -> void:
 	main.name = "Main"
 	root.add_child(main)
 	await _frames(10)
+	if "--bigdig" in OS.get_cmdline_user_args():
+		# A well-worked world (like a long save): holes all over the map before anyone joins.
+		var t = main.terrain
+		print("[host] digging up the map...")
+		for gz in 15:
+			for gx in 15:
+				var x := -420.0 + gx * 60.0
+				var z := -420.0 + gz * 60.0
+				t.dig(Vector3(x, t.get_height(x, z) - 0.8, z), 2.0, 4.0)
+		t.dig(Vector3(100, t.get_height(100, -200) - 1.5, -200), 2.0, 8.0)
+		# Let the spoil settle first (as a loaded save would be).
+		var settle := 0
+		var beat := Time.get_ticks_msec()
+		while t._slumping and settle < 60 * 60:
+			await _frames(1)
+			settle += 1
+			if Time.get_ticks_msec() - beat > 5000:
+				beat = Time.get_ticks_msec()
+				print("[host] settling: frame %d, %d sites" % [settle, t._slump_rects.size()])
+		print("[host] dug up the map before hosting: %d changed chunks (settled in %.0f s)" % [t.edited.size(), settle / 60.0])
 	main._on_host_requested(Net.DEFAULT_PORT, PASSWORD, "HostBot")
 	print("[host] hosting: ", main.net.is_host())
 	var waited := 0
@@ -95,6 +115,8 @@ func _client(bad: bool) -> void:
 		await process_frame
 		worst = maxi(worst, Time.get_ticks_usec() - t0)
 	print("[client] worst frame in the first 4 s after joining: %d ms" % (worst / 1000))
+	var early: float = main.terrain.original_height(100, -200) - main.terrain.get_height(100, -200)
+	print("[client] the host's hole dug before I joined, at (100, -200): %.2f m deep" % early)
 	var before: int = main.machines.size()
 	var dug_before: float = main.terrain.original_height(-60, 0) - main.terrain.get_height(-60, 0)
 	await _frames(60 * 5)

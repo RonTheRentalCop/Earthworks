@@ -419,6 +419,10 @@ func _update_load() -> void:
 	mass = float(_spec.mass) + payload * SOIL_DENSITY
 	# A heaped body sits high: the centre of gravity climbs with the load.
 	center_of_mass = Vector3(0, float(_spec.com) + fill * _bed_height * 0.7, 0)
+	# The springs scale with mass by themselves, but their force limit doesn't: keep it in
+	# step with the load, or a full body bottoms the suspension out and the truck bucks.
+	for w in _wheels:
+		w.suspension_max_force = 90000.0 * maxf(mass / 9000.0, 0.4)
 
 
 ## Tyres leave ruts in soft ground (deep in mud, light tracks elsewhere off the gravel).
@@ -588,7 +592,7 @@ func _update_heap() -> void:
 			var b := top[iz * (nx + 1) + ix + 1]
 			var c := top[(iz + 1) * (nx + 1) + ix]
 			var d := top[(iz + 1) * (nx + 1) + ix + 1]
-			for p in [a, d, b, a, c, d]:
+			for p in [a, b, d, a, d, c]:  # wound to face up (clockwise seen from above)
 				tool.add_vertex(p)
 	tool.generate_normals()
 	var mesh := tool.commit()

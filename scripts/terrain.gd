@@ -33,6 +33,7 @@ const BASE_STEP := 4  # the smooth base is sampled every metre
 const BASE_VERTS := 1025  # CELLS / BASE_STEP + 1
 const NEAR_RADIUS := 150.0  # detailed chunks within this of the camera
 const STREAM_BUDGET_USEC := 5000  # time per frame for streaming ground in
+const SLUMP_BUDGET_USEC := 2000  # per settling pass (two a frame)
 const FAR_TILE_CELLS := 512  # 128 m horizon tiles
 const FAR_TILES := 8
 const FAR_STEP := 8  # 2 m between horizon vertices
@@ -119,6 +120,13 @@ var last_cut_wanted := 0.0
 ## Multiplayer (host): chunks changed since the last sync, and every chunk that differs
 ## from the generated world (sent to players who join later).
 var net_record := false
+## Chunks changed since the world was built (what the world save keeps), once recording.
+var edited := {}
+var record_edits := false
+## The world save's copy of each edited chunk, compressed, and which changed since it was
+## made (so an autosave only repacks what's new).
+var save_cache := {}
+var save_stale := {}
 var net_dirty := {}
 var net_changed := {}
 
@@ -145,9 +153,15 @@ var _collision := {}  # tile index -> [CollisionShape3D, HeightMapShape3D, last 
 var _dirty_collision := {}
 var _pending_collision := {}  # tile -> distance² to the anchor that wants it
 var _collision_timer := 0.0
-var _wake_rect := Rect2i()
-var _has_wake := false
-var _slump_rect := Rect2i()
+## Areas changed since the last collision update, announced to the water, minimap and
+## loose bodies; kept apart per site (one box round far-apart changes would make them all
+## redo most of the map).
+var _wake_rects: Array[Rect2i] = []
+## Chunks from the network or a save for ground not generated yet: put in when it is.
+var _pending_chunks := {}
+## Areas where loose soil is still settling: one per dig site (a single box round
+## edits far apart would cover most of the map and grind every frame to a halt).
+var _slump_rects: Array[Rect2i] = []
 var _slumping := false
 var _full_rect := Rect2i(0, 0, VERTS, VERTS)
 
@@ -323,16 +337,50 @@ func _ensure(r: Rect2i) -> void:
 	var cz0 := clampi(r.position.y / GEN_CELLS, 0, GEN_CHUNKS - 1)
 	var cx1 := clampi((r.end.x - 1) / GEN_CELLS, 0, GEN_CHUNKS - 1)
 	var cz1 := clampi((r.end.y - 1) / GEN_CELLS, 0, GEN_CHUNKS - 1)
+	var made := false
 	for cz in range(cz0, cz1 + 1):
 		for cx in range(cx0, cx1 + 1):
 			if _generated[cz * GEN_CHUNKS + cx] == 0:
 				_generate_block(cx, cz)
+				made = true
+	if made and not _pending_chunks.is_empty():
+		_apply_pending(r)
+
+
+## Puts in waiting chunks around newly generated ground (generating the rest of each
+## chunk's ground first: at most a few small blocks).
+func _apply_pending(r: Rect2i) -> void:
+	var size := CHUNK_CELLS
+	var cx0 := clampi((r.position.x - 1) / size, 0, CHUNKS - 1)
+	var cz0 := clampi((r.position.y - 1) / size, 0, CHUNKS - 1)
+	var cx1 := clampi(r.end.x / size, 0, CHUNKS - 1)
+	var cz1 := clampi(r.end.y / size, 0, CHUNKS - 1)
+	for cz in range(cz0, cz1 + 1):
+		for cx in range(cx0, cx1 + 1):
+			var index := cz * CHUNKS + cx
+			if _pending_chunks.has(index):
+				var data: Array = _pending_chunks[index]
+				_pending_chunks.erase(index)
+				_ensure(Rect2i(cx * size, cz * size, size + 1, size + 1).intersection(_full_rect))
+				net_apply_chunk(data)
+
+
+## Whether all the ground under a render chunk (including its far edge) exists yet.
+func _chunk_generated(cx: int, cz: int) -> bool:
+	var per := CHUNK_CELLS / GEN_CELLS
+	for bz in range(cz * per, mini((cz + 1) * per, GEN_CHUNKS - 1) + 1):
+		for bx in range(cx * per, mini((cx + 1) * per, GEN_CHUNKS - 1) + 1):
+			if _generated[bz * GEN_CHUNKS + bx] == 0:
+				return false
+	return true
 
 
 func _ensure_vertex(x: int, z: int) -> void:
 	var c := mini(z / GEN_CELLS, GEN_CHUNKS - 1) * GEN_CHUNKS + mini(x / GEN_CELLS, GEN_CHUNKS - 1)
 	if _generated[c] == 0:
 		_generate_block(c % GEN_CHUNKS, c / GEN_CHUNKS)
+		if not _pending_chunks.is_empty():
+			_apply_pending(Rect2i(x, z, 1, 1))
 
 
 func _generate_block(cx: int, cz: int) -> void:
@@ -651,9 +699,12 @@ func wet_point(wx: float, wz: float, amount: float) -> void:
 	if changed:
 		# Every PC runs its own water, so wetting is redrawn here but never sent to players.
 		var record := net_record
+		var keep := record_edits
 		net_record = false
+		record_edits = false  # (and comes back with the water every session, so isn't saved)
 		_mark_dirty_chunks(Rect2i(x - 2, z - 2, 5, 5))
 		net_record = record
+		record_edits = keep
 
 
 func mud_at(wx: float, wz: float) -> float:
@@ -933,7 +984,7 @@ func _vertex_rect(wx: float, wz: float, radius: float) -> Rect2i:
 func _on_edited(rect: Rect2i) -> void:
 	_mark_dirty(rect)
 	var grown := rect.grow(1).intersection(_full_rect)
-	_slump_rect = _slump_rect.merge(grown) if _slumping else grown
+	_add_slump_rect(grown)
 	_slumping = true
 
 
@@ -947,8 +998,7 @@ func _mark_dirty(rect: Rect2i) -> void:
 		for tx in range(tx0, tx1 + 1):
 			if _collision.has(tz * COLLISION_TILES + tx):
 				_dirty_collision[tz * COLLISION_TILES + tx] = true
-	_wake_rect = _wake_rect.merge(rect) if _has_wake else rect
-	_has_wake = true
+	_merge_rect(_wake_rects, rect, 8)
 
 
 func _mark_dirty_chunks(rect: Rect2i) -> void:
@@ -965,6 +1015,9 @@ func _mark_dirty_chunks(rect: Rect2i) -> void:
 			if net_record:
 				net_dirty[index] = true
 				net_changed[index] = true
+			if record_edits:
+				edited[index] = true
+				save_stale[index] = true
 
 
 func _physics_process(delta: float) -> void:
@@ -977,10 +1030,10 @@ func _physics_process(delta: float) -> void:
 			_update_collision_tile(key)
 		_dirty_collision.clear()
 		_collision_timer = COLLISION_INTERVAL
-		if _has_wake:
-			var corner := grid_to_world(_wake_rect.position.x, _wake_rect.position.y)
-			area_changed.emit(Rect2(corner, Vector2(_wake_rect.size) * CELL_SIZE))
-			_has_wake = false
+		var waking := _wake_rects
+		_wake_rects = []
+		for w in waking:
+			area_changed.emit(Rect2(grid_to_world(w.position.x, w.position.y), Vector2(w.size) * CELL_SIZE))
 
 
 func _process(_delta: float) -> void:
@@ -1316,40 +1369,80 @@ func _update_collision_tile(key: int) -> void:
 
 # --- Slumping ------------------------------------------------------------------------------
 
-## One relaxation pass: any slope steeper than TALUS sheds soil downhill.
+func _add_slump_rect(r: Rect2i) -> void:
+	_merge_rect(_slump_rects, r, 4)
+
+
+## Adds a rectangle to a list, joined onto any it touches or nearly does (within `gap`).
+static func _merge_rect(list: Array[Rect2i], r: Rect2i, gap: int) -> void:
+	var near := r.grow(gap)
+	var k := 0
+	while k < list.size():
+		if list[k].intersects(near):
+			r = r.merge(list[k])
+			near = r.grow(gap)
+			list.remove_at(k)
+			k = 0
+		else:
+			k += 1
+	list.append(r)
+
+
+## One relaxation pass over every settling area: any slope steeper than TALUS sheds
+## soil downhill.
 func _slump_pass() -> void:
-	var r := _slump_rect
-	var min_x := VERTS
-	var min_z := VERTS
-	var max_x := -1
-	var max_z := -1
-	for z in range(r.position.y, r.end.y):
-		for x in range(r.position.x, r.end.x):
-			var i := z * VERTS + x
-			if x + 1 < VERTS and _relax(i, i + 1):
-				min_x = mini(min_x, x)
-				max_x = maxi(max_x, x + 1)
-				min_z = mini(min_z, z)
-				max_z = maxi(max_z, z)
-			if z + 1 < VERTS and _relax(i, i + VERTS):
-				min_x = mini(min_x, x)
-				max_x = maxi(max_x, x)
-				min_z = mini(min_z, z)
-				max_z = maxi(max_z, z + 1)
-	if max_x < 0:
-		_slumping = false
-		return
-	var changed := Rect2i(min_x, min_z, max_x - min_x + 1, max_z - min_z + 1)
-	_mark_dirty(changed)
-	_slump_rect = changed.grow(1).intersection(_full_rect)
-	_ensure(_slump_rect)
+	var still: Array[Rect2i] = []
+	var waiting: Array[Rect2i] = []  # out of time this pass: first in line next time
+	var start := Time.get_ticks_usec()
+	var queue := _slump_rects
+	var k := 0
+	while k < queue.size():
+		var r: Rect2i = queue[k]
+		k += 1
+		if Time.get_ticks_usec() - start > SLUMP_BUDGET_USEC:
+			waiting.append(r)  # many sites at once share the time rather than stall a frame
+			continue
+		var min_x := VERTS
+		var min_z := VERTS
+		var max_x := -1
+		var max_z := -1
+		for z in range(r.position.y, r.end.y):
+			for x in range(r.position.x, r.end.x):
+				var i := z * VERTS + x
+				if x + 1 < VERTS and _relax(i, i + 1):
+					min_x = mini(min_x, x)
+					max_x = maxi(max_x, x + 1)
+					min_z = mini(min_z, z)
+					max_z = maxi(max_z, z)
+				if z + 1 < VERTS and _relax(i, i + VERTS):
+					min_x = mini(min_x, x)
+					max_x = maxi(max_x, x)
+					min_z = mini(min_z, z)
+					max_z = maxi(max_z, z + 1)
+		if max_x < 0:
+			continue
+		var changed := Rect2i(min_x, min_z, max_x - min_x + 1, max_z - min_z + 1)
+		_mark_dirty(changed)
+		var next := changed.grow(1).intersection(_full_rect)
+		_ensure(next)
+		still.append(next)
+	_slump_rects = []
+	for r in waiting + still:
+		_add_slump_rect(r)
+	_slumping = not _slump_rects.is_empty()
 
 
 func _relax(a: int, b: int) -> bool:
 	var diff := heights[a] - heights[b]
 	if absf(diff) <= TALUS + 0.002:
 		return false
-	var move := (diff - signf(diff) * TALUS) * 0.25
+	# Natural slopes stay as they are (a riverbank or hillside steeper than loose soil's
+	# angle would otherwise keep eroding forever once a dig nearby set it going); only
+	# what digging and dumping made steeper than that settles, back to the natural slope.
+	var limit := maxf(TALUS, absf(original[a] - original[b]))
+	if absf(diff) <= limit + 0.002:
+		return false
+	var move := (diff - signf(diff) * limit) * 0.25
 	# Protected ground holds its shape: it only sheds spoil piled on top of it.
 	var giver := a if move > 0.0 else b
 	if protected[giver] == 1:
@@ -1395,13 +1488,68 @@ func net_pack_chunk(index: int) -> Array:
 	return [index, h, m, d, p, s]
 
 
-## Applies a chunk from the host (joining players).
-func net_apply_chunk(data: Array) -> void:
-	var index: int = data[0]
+## A chunk packed small for the network: each height as millimetres off the untouched
+## ground (which every player generates identically, so unchanged ground is all zeros
+## and compresses to almost nothing), mud in 1/255 steps, the flags as they are.
+func net_pack_delta(index: int) -> Array:
 	var cx := index % CHUNKS
 	var cz := index / CHUNKS
 	var n := CHUNK_CELLS + 1
 	_ensure(Rect2i(cx * CHUNK_CELLS, cz * CHUNK_CELLS, n, n).intersection(_full_rect))
+	var h := PackedByteArray()
+	var m := PackedByteArray()
+	var d := PackedByteArray()
+	var p := PackedByteArray()
+	var s := PackedByteArray()
+	h.resize(n * n * 2)
+	m.resize(n * n)
+	d.resize(n * n)
+	p.resize(n * n)
+	s.resize(n * n)
+	var k := 0
+	for lz in n:
+		var row := mini(cz * CHUNK_CELLS + lz, CELLS) * VERTS + cx * CHUNK_CELLS
+		for lx in n:
+			var i := row + mini(lx, CELLS - cx * CHUNK_CELLS)
+			h.encode_s16(k * 2, clampi(roundi((heights[i] - original[i]) * 1000.0), -32767, 32767))
+			m[k] = clampi(roundi(mud[i] * 255.0), 0, 255)
+			d[k] = disturbed[i]
+			p[k] = pressed[i]
+			s[k] = surface[i]
+			k += 1
+	return [index, "delta", h, m, d, p, s]
+
+
+## Applies a chunk from the host or a save; false if it's waiting for its ground to be
+## generated (it goes in then, so far-off changes cost nothing until you get near).
+func net_apply_chunk(data: Array) -> bool:
+	var index: int = data[0]
+	var cx := index % CHUNKS
+	var cz := index / CHUNKS
+	var n := CHUNK_CELLS + 1
+	if not _chunk_generated(cx, cz):
+		_pending_chunks[index] = data
+		return false
+	_pending_chunks.erase(index)
+	if data.size() == 7 and data[1] is String:
+		var dh: PackedByteArray = data[2]
+		var dm: PackedByteArray = data[3]
+		var dd: PackedByteArray = data[4]
+		var dp: PackedByteArray = data[5]
+		var ds: PackedByteArray = data[6]
+		var j := 0
+		for lz in n:
+			var row := mini(cz * CHUNK_CELLS + lz, CELLS) * VERTS + cx * CHUNK_CELLS
+			for lx in n:
+				var i := row + mini(lx, CELLS - cx * CHUNK_CELLS)
+				heights[i] = original[i] + dh.decode_s16(j * 2) * 0.001
+				mud[i] = dm[j] / 255.0
+				disturbed[i] = dd[j]
+				pressed[i] = dp[j]
+				surface[i] = ds[j]
+				j += 1
+		_mark_dirty(Rect2i(cx * CHUNK_CELLS, cz * CHUNK_CELLS, n, n))
+		return true
 	var h: PackedFloat32Array = data[1]
 	var m: PackedFloat32Array = data[2]
 	var d: PackedByteArray = data[3]
@@ -1420,3 +1568,4 @@ func net_apply_chunk(data: Array) -> void:
 				surface[i] = s[k]
 			k += 1
 	_mark_dirty(Rect2i(cx * CHUNK_CELLS, cz * CHUNK_CELLS, n, n))
+	return true
