@@ -172,7 +172,8 @@ mud ruts, the recovery winch, trailer towing and the grapple; `gameplay_check` c
 every machine, the shredder, jobs, the protected depot, the log truck, dozer gravity and pushing;
 `machines_check` covers both dozer blades, the grapple's grip and the mining excavator;
 `bigmap_check` covers sinking in the swamp, ground mats, quarry gravel, prized logs and stumps
-streaming back in.
+streaming back in. `trees_check` fells every species and buries logs under dumped soil to check nothing
+ever ends up under the ground.
 Checks never touch your save. `tools/net_check.gd` runs a host and a client as two processes on
 this PC (`-- --role=host`, then `-- --role=client`; `--role=badclient` tries a wrong password).
 

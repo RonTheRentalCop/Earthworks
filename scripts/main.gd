@@ -598,6 +598,7 @@ func _on_tree_body(tid: int, body: RigidBody3D, kind: String) -> void:
 	var id := next_body_id
 	next_body_id += 1
 	_register_body(body, id)
+	_unbury(body)  # the ground may have been built up round the tree since it grew
 	var known: Array = tree_bodies.get(tid, [-1, -1])
 	if kind == "log":
 		known[0] = id
@@ -1068,11 +1069,36 @@ func _hold_until_grounded() -> void:
 			b.freeze_mode = b.get_meta("awaiting_ground")
 			b.remove_meta("awaiting_ground")
 			b.freeze = false
+		if not b.freeze:
+			_unbury(b)
+
+
+## The ground's collision only pushes things up from above, so anything that ends up
+## under the surface (soil dumped or dozed over a resting log, a tree felled where spoil
+## was piled round its foot) would drop straight through. Lifts it back on top.
+## Checked along a log's whole length, not just at its base.
+func _unbury(b: RigidBody3D) -> void:
+	var points: Array[Vector3] = []
+	var clearance := 0.2
+	if b.has_meta("grip"):
+		var g: Array = b.get_meta("grip")
+		var a := b.to_global(g[0])
+		var c := b.to_global(g[1])
+		points = [a, a.lerp(c, 0.5), c]
+	else:
+		points = [b.global_position]
+		clearance = -0.2  # blocks and mats: their middle may sit a little low on a slope
+	var lift := 0.0
+	var buried := false
+	for p in points:
 		var ground := terrain.sample_height(p.x, p.z)
-		if p.y < ground - 2.5:
-			b.global_position = Vector3(p.x, ground + 1.5, p.z)
-			b.linear_velocity = Vector3.ZERO
-			b.angular_velocity = Vector3.ZERO
+		if p.y < ground - 0.05:
+			buried = true
+		lift = maxf(lift, ground + clearance - p.y)
+	if buried and lift > 0.0:
+		b.global_position += Vector3(0, lift + 0.15, 0)
+		b.linear_velocity = Vector3(b.linear_velocity.x, maxf(b.linear_velocity.y, 0.0), b.linear_velocity.z)
+		b.sleeping = false
 
 
 func _unhandled_input(event: InputEvent) -> void:
@@ -1354,6 +1380,18 @@ func _on_terrain_changed(rect: Rect2) -> void:
 		var p := body.global_position
 		if area.has_point(Vector2(p.x, p.z)):
 			body.sleeping = false
+			_unbury(body)
+	# Logs, stumps and mats too (a log reaches up to ~9 m from its base, so test its middle):
+	# they settle into holes dug under them and come up on top of soil dumped over them.
+	var reach := area.grow(5.0)
+	for id in bodies:
+		var b: RigidBody3D = bodies[id]
+		if not is_instance_valid(b) or b.freeze or b in debris:
+			continue
+		var p := b.global_position
+		if reach.has_point(Vector2(p.x, p.z)):
+			b.sleeping = false
+			_unbury(b)
 	for tree in forests.live_stumps_in(area):
 		tree.check_roots(terrain)
 
