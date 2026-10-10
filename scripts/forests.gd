@@ -34,6 +34,13 @@ var remote := false
 ## Where trees must be real: [position, ...] (players, machines in use).
 var anchors: Array = []
 var meshes: Array = []
+## The snowy pine forest (x, z, radius): trees there use snow_meshes (snow-capped pines,
+## bare winter broadleaves). Set before setup.
+var snow := Vector3.ZERO
+var snow_meshes: Array = []
+## Leaf colour per species (matches the meshes), for the leaves that shower off a felled tree.
+const LEAF_COLORS := [Color(0.2, 0.42, 0.22), Color(0.24, 0.47, 0.25), Color(0.93, 0.72, 0.3),
+	Color(0.45, 0.58, 0.25), Color(0.36, 0.42, 0.24), Color(0.3, 0.45, 0.2)]
 var pos := PackedVector3Array()
 var yaw := PackedFloat32Array()
 var size := PackedFloat32Array()
@@ -55,6 +62,9 @@ func setup(terrain_node: Terrain) -> void:
 	meshes = [Scenery.pine_mesh(Color(0.2, 0.42, 0.22)), Scenery.pine_mesh(Color(0.24, 0.47, 0.25)),
 		Scenery.broadleaf_mesh(Color(0.93, 0.72, 0.3)), Scenery.broadleaf_mesh(Color(0.45, 0.58, 0.25)),
 		Scenery.cypress_mesh(), Scenery.oak_mesh()]
+	var winter := Scenery.winter_tree_mesh()
+	snow_meshes = [Scenery.snowy_pine_mesh(Color(0.2, 0.42, 0.22)), Scenery.snowy_pine_mesh(Color(0.24, 0.47, 0.25)),
+		winter, winter, winter, winter]
 	_stump_mesh = ForestTree.stump_mesh()
 	cells.resize(GRID * GRID)
 	for k in cells.size():
@@ -103,6 +113,11 @@ func add_forest(center: Vector2, radius: float, count: int, weights: Array, rng:
 		state.append(0)
 		cells[_cell_of(p)].append(tid)
 		placed += 1
+
+
+## Whether a tree stands in the snowy forest.
+func in_snow(tid: int) -> bool:
+	return snow.z > 0.0 and Vector2(pos[tid].x, pos[tid].z).distance_to(Vector2(snow.x, snow.y)) < snow.z * 0.92
 
 
 func count() -> int:
@@ -181,9 +196,13 @@ func _cell_distance(c: int, p: Vector2) -> float:
 func _spawn(tid: int) -> void:
 	var tree := ForestTree.new()
 	tree.tid = tid
-	tree.trunk_mesh = meshes[species[tid]]
+	tree.trunk_mesh = snow_meshes[species[tid]] if in_snow(tid) else meshes[species[tid]]
 	tree.size = size[tid]
 	tree.value_mult = SPECIES[species[tid]][2]
+	tree.leaf_color = LEAF_COLORS[species[tid]]
+	if in_snow(tid):
+		# Pines shake off snow when they fall; bare winter trees have no leaves to lose.
+		tree.leaf_color = Color(0.95, 0.96, 0.98) if species[tid] < 2 else Color(0, 0, 0, 0)
 	var p := pos[tid]
 	tree.position = Vector3(p.x, terrain.get_height(p.x, p.z), p.z)
 	tree.rotation.y = yaw[tid]
@@ -221,7 +240,7 @@ func _rebuild_cell(c: int) -> void:
 	for tid in cells[c]:
 		if state[tid] == 2:
 			continue
-		var key := -1 if state[tid] == 1 else int(species[tid])
+		var key := -1 if state[tid] == 1 else int(species[tid]) + (10 if in_snow(tid) else 0)
 		if not groups.has(key):
 			groups[key] = []
 		var s := size[tid]
@@ -237,7 +256,7 @@ func _rebuild_cell(c: int) -> void:
 		var xforms: Array = groups[key]
 		var mm := MultiMesh.new()
 		mm.transform_format = MultiMesh.TRANSFORM_3D
-		mm.mesh = _stump_mesh if key == -1 else meshes[key]
+		mm.mesh = _stump_mesh if key == -1 else (snow_meshes[key - 10] if key >= 10 else meshes[key])
 		mm.instance_count = xforms.size()
 		for i in xforms.size():
 			mm.set_instance_transform(i, xforms[i])

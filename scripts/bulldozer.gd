@@ -90,6 +90,12 @@ var machine_name := "Bulldozer"
 var blade_type := "straight"
 ## Model and machine scale (1 = a mid-size dozer).
 var size := 1.45
+## Blade proportions beyond the machine's size (a carry dozer's blade is far wider and
+## taller than a standard one); capacity grows with both. Set before adding to the tree.
+var blade_width_mult := 1.0
+var blade_height_mult := 1.0
+## Shown name (empty: "Bulldozer" / "Angle dozer").
+var display_name := ""
 var capacity := CAPACITY
 var cab: Node3D
 var eye: Node3D
@@ -142,9 +148,9 @@ var _sink_timer := 0.0  # which end soil is leaving (-1 left, 1 right, 0 none)
 
 func _ready() -> void:
 	_th = TRACK_HALF * size
-	capacity = CAPACITY * size * size * (1.25 if blade_type == "straight" else 1.0)
-	_blade_width = 3.9 if blade_type == "straight" else 4.2
-	machine_name = "Bulldozer" if blade_type == "straight" else "Angle dozer"
+	capacity = CAPACITY * size * size * (1.25 if blade_type == "straight" else 1.0) * blade_width_mult * blade_height_mult
+	_blade_width = (3.9 if blade_type == "straight" else 4.2) * blade_width_mult
+	machine_name = display_name if display_name != "" else ("Bulldozer" if blade_type == "straight" else "Angle dozer")
 	collision_layer = BODY_LAYER
 	collision_mask = SOLID_MASK
 	motion_mode = CharacterBody3D.MOTION_MODE_FLOATING
@@ -379,10 +385,13 @@ func _drive(delta: float) -> void:
 	top *= clampf(1.0 - climb * SLOPE_EFFECT, 0.35, 1.3)
 	var target := _axis("drive_back", "drive_forward") * top
 	var rate := ACCELERATION if absf(target) > absf(_speed) and signf(target) == signf(_speed) or is_zero_approx(_speed) else DECELERATION
+	var on_ice := terrain.is_ice(global_position.x, global_position.z)
+	if on_ice:
+		rate *= 0.18  # the tracks spin on ice: slow to get going, slow to stop
 	_speed = move_toward(_speed, target, rate * delta)
 	# Steering has inertia, and a full blade (dragging on the ground) resists pivoting.
 	var wanted_turn := _axis("turn_right", "turn_left") * TURN_RATE * (1.0 - 0.4 * mud) * (1.0 - 0.35 * blade_load / capacity)
-	_turn = move_toward(_turn, wanted_turn, TURN_ACCEL * delta)
+	_turn = move_toward(_turn, wanted_turn * (0.6 if on_ice else 1.0), TURN_ACCEL * (0.3 if on_ice else 1.0) * delta)
 	rotate_y(_turn * delta)
 	_track_travel += Vector2(_speed - _turn * _th.y, _speed + _turn * _th.y) * delta
 	velocity = -global_basis.z * _speed
@@ -754,6 +763,7 @@ func _build_model() -> void:
 		_build_u_blade(paint, paint_dark, steel)
 	else:
 		_build_angle_blade(paint, paint_dark, steel, dark)
+	_blade.scale.y = blade_height_mult  # a high-wall blade (its soil heap grows with it)
 	# Soil heaped on the blade face while pushing.
 	_berm = _node(_blade, Vector3(0, -0.6, -0.6))
 	_berm.scale = Vector3(_blade_width / 3.4, 1, 1)
@@ -884,6 +894,7 @@ func _kinematic_body(parent: Node3D) -> AnimatableBody3D:
 	body.sync_to_physics = false
 	body.collision_layer = ARM_LAYER
 	body.collision_mask = 0
+	body.set_meta("uproots", true)  # shoving into a stump tears it out
 	parent.add_child(body)
 	return body
 

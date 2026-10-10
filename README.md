@@ -26,6 +26,9 @@ Walk up to a cab door and press **F** (controller **X**) to climb in.
 | Winch: tap to hook, hold to reel | H | B |
 | Swap excavator tool / hitch a trailer | N or T | L3 |
 | Cab view | V | R3 |
+| Ratchet strap: press at the thing, then at what to tie it to | G | LB |
+| Rope (same two presses) | R | RB |
+| Cut a strap or rope you're standing by | X | B |
 | Minimap: close-up / whole area | M | |
 
 **Mouse-only machine control:** hold a button and push the mouse like a joystick.
@@ -84,12 +87,24 @@ for the host's for the session; your own career is untouched.
   standing pools and swamp cypress forests.
 - **Gravel quarry** in the south-east: benches of gravel to dig and haul. An abandoned **farm** to
   demolish near it.
+- **Snowy pine forest** in the east: snow on the ground and on the trees (the broadleaves stand
+  bare for winter), falling snow, and a **frozen pond** of slippery ice (wheels lose their grip,
+  tracks slide). Dig or drive the snow to mud and the soil shows through.
 - Big hills, three lakes, a river across the whole map plus a western river and streams, mud pits
   everywhere, and 21 forests (about 2,900 trees: pines, broadleaves, swamp cypress, giant oaks) with a
-  dense tree line round the edge. Water has momentum: it runs downhill, surges into new channels, and
+  dense tree line round the edge. Water has momentum, and near you it runs every frame: it floods channels you dig, fills holes,
+  runs downhill, surges into new channels, and
   the surface flows visibly downstream (white water where it's fast).
+- Felled trees shed their leaves as they fall and come down as bare, heavy logs (a big oak weighs
+  tonnes), so they lie where they land instead of bouncing away.
+- **Ore in the ground**: dig below the topsoil and chunks of ore turn up in the hole now and then:
+  iron and copper (common, rich round the quarry), silver (the hills), gold (along the rivers and
+  the big hills, a metre or more down) and emeralds (rare, deep, in the hills and the snowfield).
+  Boulders lie about the map, some flecked with ore hinting at what's under them. Take ore and
+  boulders to the **ore crusher** on the quarry floor (grapple, truck or dozer) to sell them.
 - Hit a tree with a machine and it falls, leaving a stump that blocks machines until you dig around
-  its roots (about 0.4 m down) to break it free. Felled trees and stumps are remembered across the map.
+  its roots (about 0.4 m down) to break it free, or shove on into it with a dozer or excavator and
+  tear it out. Felled trees and stumps are remembered across the map.
 
 ### Mud, sinking, gravel and mats
 - Heavy machines **sink into mud**. A truck's wheels sink by the load on each wheel: an empty pickup
@@ -106,7 +121,10 @@ for the host's for the session; your own career is untouched.
   bucket; dump over a truck body to load it. Tools: 3.5 m³ bucket, 6.5 m³ bulk bucket, 1.5 m³ trench
   bucket, tree grapple (fells trees, pulls stumps, lifts logs).
 - **Mining excavator**: the same machine at twice the size — a ~10 m³ bucket, huge reach, slower arm.
-  The **grapple** grips logs anywhere along the trunk and settles them centred across its jaws.
+  The **grapple** grips logs anywhere along the trunk and settles them centred across its jaws;
+  close it on a pile and it takes up to four logs at once in a bundle.
+- **Big bulldozer** (18 m³ U-blade), **Big angle dozer** (14 m³) and the **Carry dozer**: a giant
+  high-wall blade that shoves ~51 m³ forward at a time.
 - **Bulldozer** (U-blade) and **Angle dozer**, both big-class machines. Each grades a flat cut a set
   depth below the natural ground. The U-blade's forward-turned wings carry everything straight ahead
   (~9 m³; what won't fit piles up in front and gets pushed along). The angle blade swings ±29° with
@@ -116,10 +134,25 @@ for the host's for the session; your own career is untouched.
 - **Dump truck** (8 m³), **Articulated hauler** (14 m³, 6x6, big tyres, good in mud),
   **Log truck** (tipping log bed with stakes — logs ride on it and slide off when it tips),
   **Heavy haul tractor** (for the lowboy), **Recovery truck** (6x6, 35 m boom winch),
+  **Heavy recovery truck** (8x8 rotator wrecker, 450 kN winch, 60 m cable),
   **Site pickup** (fast 4x4). All have real wheel physics, a load that raises mass and centre of
   gravity, a handbrake, and mud that sinks the wheels.
+- **Tracked conveyor**: tip soil or gravel into its hopper (excavator bucket or a dump truck backed
+  up to it) and the belt carries it up and drops it off the head as a growing pile, or into a truck
+  parked under the head. Drive it on its tracks, raise/lower the boom (boom controls) and fold/unfold
+  its three sections (stick in / out): 9 m folded for driving, a 28 m reach unfolded. The belt only
+  runs fully unfolded.
+- **Logging semi** (tipping log bunks on a fast tractor) and **Log trailers** (bunks and tall stakes;
+  the button at the back straps the load down). Trailers chain: back the last trailer's tail up to
+  another trailer's drawbar and press the hitch button to add it to the train; with nothing behind,
+  the hitch button drops the last one.
+- **Ratchet straps and rope** (on foot): a strap locks a log, stump, mat or block onto a truck,
+  trailer, machine or tree so it rides rigidly; a rope is a line with a little slack that pulls
+  when it goes tight (drag a log behind a truck). Cut either with X / B.
 - **Lowboy trailer**: hitch to any truck; walk to the back and press F / X to raise or lower the
-  hydraulic ramps; tracked machines drive up and ride on the deck.
+  hydraulic ramps; tracked machines drive up and ride on the deck. Raise the ramps and everything on
+  the deck (machines, trucks, logs, mats) is strapped down and rides locked to it; lower them to
+  unload.
 
 ## Feel
 - Physics interpolation is on, so movement is smooth at any frame rate; the camera follows the
@@ -182,7 +215,12 @@ every machine, the shredder, jobs, the protected depot, the log truck, dozer gra
 `bigmap_check` covers sinking in the swamp, ground mats, quarry gravel, prized logs and stumps
 streaming back in. `trees_check` fells every species and buries logs under dumped soil to check nothing
 ever ends up under the ground.
-`save_check` digs, gravels, fells, pulls a stump, moves rubble and lays mats, saves, rebuilds the
+`logging_check` pulls two chained log trailers with a strapped load behind the logging semi;
+`ties_check` straps a log onto a truck with the keys, drags one on a rope and straps one to a tree.
+`ore_check` digs pits in three places and sells the best find at the crusher; `water_check`
+times the river filling a trench dug from it to a pit. `conveyor_check` tips a truck into the conveyor, piles the load off the head, folds, raises,
+drives, and loads a truck under the head. `ground_check` makes sure the worker never ends up under the ground; `trailer_check` tows logs and
+a dozer strapped to the lowboy through a hard turn and stop. `save_check` digs, gravels, fells, pulls a stump, moves rubble and lays mats, saves, rebuilds the
 world and checks it all comes back. Checks never touch your save. `tools/net_check.gd` runs a host
 and players as separate processes on this PC (`-- --role=host`, then `-- --role=client`;
 `--role=idleclient` adds another player, `--role=badclient` tries a wrong password, and

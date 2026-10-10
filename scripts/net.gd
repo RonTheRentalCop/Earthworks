@@ -17,7 +17,7 @@ extends Node
 signal status_changed(text: String)
 signal players_changed
 
-const VERSION := "earthworks-net-2"  # bump whenever the messages change: mismatched games refuse politely
+const VERSION := "earthworks-net-5"  # bump whenever the messages change: mismatched games refuse politely
 const DEFAULT_PORT := 24680
 const MAX_PLAYERS := 4
 const STATE_INTERVAL := 0.05  # 20 updates a second
@@ -28,7 +28,7 @@ const BODIES_PER_PACKET := 32  # 32 x 32 bytes: fits one network packet
 const MAX_REQUESTS_PER_SECOND := 20
 const INPUT_ACTIONS := ["drive_forward", "drive_back", "turn_left", "turn_right", "swing_left", "swing_right",
 	"boom_up", "boom_down", "stick_out", "stick_in", "bucket_curl", "bucket_dump", "handbrake"]
-const REQUESTS := ["enter", "exit", "utility", "ramps", "reset", "buy", "deliver", "take_job", "abandon_job", "return", "supply"]
+const REQUESTS := ["enter", "exit", "utility", "ramps", "reset", "buy", "deliver", "take_job", "abandon_job", "return", "supply", "tie", "cut_tie"]
 const Player = preload("res://scripts/player.gd")
 const COLORS: Array[Color] = [Color(1.0, 0.76, 0.1), Color(0.35, 0.75, 1.0), Color(0.55, 0.95, 0.45), Color(1.0, 0.45, 0.6)]
 
@@ -422,11 +422,11 @@ func _changed_bodies() -> PackedFloat32Array:
 		if sent >= BODIES_PER_PACKET:
 			break
 		var id: int = ids[(_body_cursor + step) % count]
-		var body: Node3D = main.bodies[id]
+		var body = main.bodies[id]
 		if not is_instance_valid(body):
 			main.bodies.erase(id)
 			continue
-		var xf := body.global_transform
+		var xf: Transform3D = body.global_transform
 		var q := xf.basis.get_rotation_quaternion()
 		var last = _body_sent.get(id)
 		if last != null and (last[0] as Vector3).distance_to(xf.origin) < 0.01 and (last[1] as Quaternion).angle_to(q) < 0.01:
@@ -491,6 +491,16 @@ func send_tree(tid: int, event: String, body_id: int) -> void:
 func send_shred(shredder: int, body_id: int) -> void:
 	if role == "host" and players.size() > 1:
 		rpc("_rx_shred", shredder, body_id)
+
+
+func send_ore(id: int, kind: String, xform: Transform3D) -> void:
+	if role == "host" and players.size() > 1:
+		rpc("_rx_ore", id, kind, xform)
+
+
+func send_ties(list: Array) -> void:
+	if role == "host" and players.size() > 1:
+		rpc("_rx_ties", list)
 
 
 func send_mat(id: int, xform: Transform3D) -> void:
@@ -563,10 +573,13 @@ func _send_snapshot(peer: int) -> void:
 			debris.append([k, b.global_transform])
 	var loose := []
 	var mats := []
+	var ores := []
 	for id in main.bodies:
 		if id >= main.FIRST_DYNAMIC_ID and is_instance_valid(main.bodies[id]):
 			if main.bodies[id].get_meta("label", "") == "ground mat":
 				mats.append([id, main.bodies[id].global_transform])
+			elif main.bodies[id].has_meta("ore"):
+				ores.append([id, main.bodies[id].get_meta("ore"), main.bodies[id].global_transform])
 			else:
 				loose.append([id, main.bodies[id].global_transform])
 	var chunks := []  # (the changed ground follows on its own, see _send_ground)
@@ -576,7 +589,7 @@ func _send_snapshot(peer: int) -> void:
 	var snapshot := {
 		"career": [main.career.money, main.career.owned.keys()], "jobs": main.jobs.net_state(),
 		"vehicles": vehicles, "trees": trees, "debris": debris, "loose": loose, "terrain": chunks,
-		"shredded": shredded, "players": players, "next_id": main.next_net_id, "mats": mats,
+		"shredded": shredded, "players": players, "next_id": main.next_net_id, "mats": mats, "ores": ores, "ties": main.ties.net_state(),
 	}
 	var raw := var_to_bytes(snapshot)
 	var packed := raw.compress(FileAccess.COMPRESSION_ZSTD)
@@ -584,7 +597,7 @@ func _send_snapshot(peer: int) -> void:
 	rpc_id(peer, "_rx_snapshot", packed, raw.size())
 	# Everything in the snapshot counts as sent.
 	for id in main.bodies:
-		var b: Node3D = main.bodies[id]
+		var b = main.bodies[id]
 		if is_instance_valid(b):
 			_body_sent[id] = [b.global_position, b.global_basis.get_rotation_quaternion()]
 
@@ -654,6 +667,11 @@ func _tx_request(action: String, arg: Variant) -> void:
 	if action in ["enter", "ramps", "reset", "take_job", "return"] and not arg is int:
 		return
 	if action in ["buy", "deliver", "supply"] and not arg is String:
+		return
+	if action == "cut_tie" and not arg is int:
+		return
+	if action == "tie" and not (arg is Array and arg.size() == 5 and arg[0] in ["strap", "rope"] and arg[1] is String
+			and arg[2] is String and arg[3] is Vector3 and arg[4] is Vector3 and (arg[3] as Vector3).is_finite() and (arg[4] as Vector3).is_finite()):
 		return
 	main.remote_request(peer, action, arg)
 
@@ -759,6 +777,21 @@ func _rx_shred(shredder: int, body_id: int) -> void:
 		if body:
 			_body_targets.erase(body_id)
 			main.shredders[shredder].take(body)
+
+
+@rpc("authority", "call_remote", "reliable")
+func _rx_ore(id: int, kind: String, xform: Transform3D) -> void:
+	if _from_host() and not main.bodies.has(id) and main.Ores.KINDS.has(kind):
+		var chunk: RigidBody3D = main.Ores.make_chunk(main, kind, xform)
+		chunk.freeze_mode = RigidBody3D.FREEZE_MODE_KINEMATIC
+		chunk.freeze = true
+		main._register_body(chunk, id)
+
+
+@rpc("authority", "call_remote", "reliable")
+func _rx_ties(list: Array) -> void:
+	if _from_host():
+		main.ties.apply_net_state(list)
 
 
 @rpc("authority", "call_remote", "reliable")

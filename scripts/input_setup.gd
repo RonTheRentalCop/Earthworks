@@ -39,6 +39,10 @@ static func setup() -> void:
 	_add("reset_vehicle", [KEY_BACKSPACE], [], [])
 	_add("restart", [KEY_F5], [], [])
 	_add("toggle_help", [KEY_F1], [], [JOY_BUTTON_Y])
+	# On foot: ratchet straps and rope (each tie is two presses: the thing, then what to tie it to).
+	_add("strap", [KEY_G], [], [JOY_BUTTON_LEFT_SHOULDER])
+	_add("rope", [KEY_R], [], [JOY_BUTTON_RIGHT_SHOULDER])
+	_add("cut_tie", [KEY_X], [], [JOY_BUTTON_B])
 	_add("map_zoom", [KEY_M], [], [])
 
 

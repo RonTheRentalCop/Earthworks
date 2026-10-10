@@ -27,6 +27,13 @@ const Shredder = preload("res://scripts/shredder.gd")
 const Net = preload("res://scripts/net.gd")
 const Winch = preload("res://scripts/winch.gd")
 const Forests = preload("res://scripts/forests.gd")
+const Conveyor = preload("res://scripts/conveyor.gd")
+const Ties = preload("res://scripts/ties.gd")
+const Ores = preload("res://scripts/ores.gd")
+## The ore crusher on the quarry floor (position, yaw).
+const CRUSHER := [Vector2(220, 346), PI * 0.5]
+const BOULDERS := 32
+const TIE_REACH := 3.5  # how far the worker reaches to tie or cut
 const Kit = preload("res://scripts/model_kit.gd")
 const WorldSave = preload("res://scripts/world_save.gd")
 const AUTOSAVE_INTERVAL := 60.0
@@ -51,6 +58,9 @@ const LAKES: Array[Vector3] = [Vector3(-72, -58, 24), Vector3(255, -80, 42), Vec
 const SWAMPS: Array[Vector3] = [Vector3(-320, 260, 150), Vector3(320, -300, 110)]
 const QUARRY := Vector2(240, 330)
 const FARM := Vector2(190, 210)
+## The snowy pine forest in the east (x, z, radius) and its frozen pond.
+const SNOWFIELD := Vector3(330, 140, 140)
+const ICE_POND := Vector3(362, 178, 20)
 ## Shredders: position and yaw (the infeed faces the yaw's -Z).
 const SHREDDERS := [[Vector2(-26, 62), -PI * 0.5], [Vector2(40, -90), PI * 0.5], [Vector2(-200, 150), PI * 0.5],
 	[Vector2(-235, -215), PI * 0.5], [Vector2(215, 60), -PI * 0.5]]
@@ -137,7 +147,13 @@ var _winch_states := {}  # peer -> winch button state (1 = this machine)
 var _pending_body_id := -1  # joining player: id to give the next log/stump a tree spawns
 var _anchor_timer := 0.0
 var _joining := false
-var _changed_areas: Array[Rect2] = []  # ground changed this frame (see _settle_bodies...)
+var _changed_areas: Array[Rect2] = []
+var _snowfall: GPUParticles3D
+var ties: Node3D  # ratchet straps and ropes
+var _dig_tally := {}  # 2 m patch -> m3 dug since its last chance at a find
+var _ore_rng := RandomNumberGenerator.new()
+var _tie_pending := {}  # first end of a tie being made: {kind, node, local}
+var _tie_line: MeshInstance3D  # the strap or rope in the worker's hands meanwhile  # gentle snow round the camera in the snowy forest  # ground changed this frame (see _settle_bodies...)
 var _restoring := false  # putting a saved world back: no stats or job progress for it
 var _autosave_timer := AUTOSAVE_INTERVAL
 var _autotest := false
@@ -274,8 +290,15 @@ func _ready() -> void:
 		for k in int(r * r / 220.0):
 			var p := c + Vector2.from_angle(rng.randf() * TAU) * sqrt(rng.randf()) * r
 			terrain.add_mud(p, rng.randf_range(14.0, 26.0), rng.randf_range(0.7, 1.0))
+	# Snow over the eastern pine forest (after the mud, so it lies on top), and a frozen pond.
+	terrain.flatten(Vector2(ICE_POND.x, ICE_POND.y), Vector2(ICE_POND.z, ICE_POND.z) * 0.7, 8.0)
+	terrain.paint_snow(Vector2(SNOWFIELD.x, SNOWFIELD.y), SNOWFIELD.z)
+	terrain.paint_ice(Vector2(ICE_POND.x, ICE_POND.y), ICE_POND.z)
+	terrain.flatten(CRUSHER[0], Vector2(12, 12), 4.0)
+	terrain.protect(CRUSHER[0], Vector2(11, 11))
 	terrain.finalize()
 	terrain.area_changed.connect(_on_terrain_changed)
+	terrain.soil_removed.connect(_on_soil_removed)
 
 	water = Water.new()
 	add_child(water)
@@ -305,6 +328,7 @@ func _ready() -> void:
 		_add_demolition_site(String(site.name), pos, blocks)
 	var wall_at := DEMOLITION + Vector2(-4, -30)
 	_add_demolition_site("brick wall", wall_at, Buildings.wall(debris_root, Vector3(wall_at.x, wall_level, wall_at.y), 12, 4, "brick"))
+	_scatter_boulders()
 	for k in debris.size():
 		_register_body(debris[k], k)
 	props = Scenery.build_zone(self, ZONE, zone_level)
@@ -328,6 +352,18 @@ func _ready() -> void:
 		s.shredded.connect(_on_shredded)
 		s.feeding.connect(func(body: RigidBody3D) -> void: net.send_shred(k, int(body.get_meta("body_id", -1))))
 		shredders.append(s)
+	# The ore crusher on the quarry floor (works like a shredder, but takes rock).
+	var crusher := Shredder.new()
+	crusher.accepts = "ore"
+	crusher.machine_name = "Ore crusher"
+	crusher.position = Vector3(CRUSHER[0].x, terrain.get_height(CRUSHER[0].x, CRUSHER[0].y), CRUSHER[0].y)
+	crusher.rotation.y = CRUSHER[1]
+	crusher.remote = joining
+	add_child(crusher)
+	crusher.shredded.connect(_on_shredded)
+	var crusher_index := shredders.size()
+	crusher.feeding.connect(func(body: RigidBody3D) -> void: net.send_shred(crusher_index, int(body.get_meta("body_id", -1))))
+	shredders.append(crusher)
 	_build_forests(rng)
 	Scenery.tree_ring(self, Terrain.HALF_SIZE + 3.0, Terrain.HALF_SIZE + 70.0, 4200)
 	_build_particle_ground()
@@ -344,6 +380,7 @@ func _ready() -> void:
 
 	player = Player.new()
 	player.camera = camera
+	player.terrain = terrain
 	player.position = Vector3(PLAYER_SPAWN.x, terrain.get_height(PLAYER_SPAWN.x, PLAYER_SPAWN.y) + 0.1, PLAYER_SPAWN.y)
 	add_child(player)
 	camera.set_target(player, false, 7.0)
@@ -394,6 +431,9 @@ func _ready() -> void:
 		career.save_settings()
 		apply_quality(q))
 	apply_quality(career.quality)
+	ties = Ties.new()
+	ties.main = self
+	add_child(ties)
 	menu.new_career.connect(func() -> void:
 		career.new_game()
 		WorldSave.erase()
@@ -507,6 +547,12 @@ func apply_snapshot(snap: Dictionary) -> void:
 			body.global_transform = entry[1]
 	for entry in snap.get("mats", []):
 		_register_body(make_mat(entry[1]), int(entry[0]))
+	for entry in snap.get("ores", []):
+		if not bodies.has(int(entry[0])):
+			var chunk := Ores.make_chunk(self, String(entry[1]), entry[2])
+			chunk.freeze_mode = RigidBody3D.FREEZE_MODE_KINEMATIC
+			chunk.freeze = true
+			_register_body(chunk, int(entry[0]))
 	for chunk in snap.terrain:
 		terrain.net_apply_chunk(chunk)
 	for entry in snap.vehicles:
@@ -517,6 +563,7 @@ func apply_snapshot(snap: Dictionary) -> void:
 		shredders[k].total_shredded = int(snap.shredded[k])
 		shredders[k]._grow_pile()
 	jobs.apply_net_state(snap.jobs)
+	ties.apply_net_state(snap.get("ties", []))
 	hud.toast("Joined the game  ·  %d players" % snap.players.size(), Hud.GOOD)
 
 
@@ -553,6 +600,11 @@ func node_by_net_id(id: String) -> Node3D:
 func _register_body(body: RigidBody3D, id: int) -> void:
 	body.set_meta("body_id", id)
 	bodies[id] = body
+	# Gone for good (shredded, crushed, sold): off the list. (Leaving the tree to be
+	# carried by a grapple doesn't count.)
+	body.tree_exited.connect(func() -> void:
+		if body.is_queued_for_deletion() and bodies.get(id) == body:
+			bodies.erase(id))
 
 
 func _register_vehicle(node: Node3D, id: int, kind: String) -> void:
@@ -692,16 +744,39 @@ func _create_vehicle(kind: String) -> Node3D:
 			x.receivers = _receivers
 			x.allowed_attachments = career.allowed_attachments()
 			return x
-		"dozer", "dozer_angle":
+		"dozer", "dozer_angle", "dozer_xl", "dozer_angle_xl", "dozer_carry":
 			var d := Bulldozer.new()
-			d.blade_type = "angle" if kind == "dozer_angle" else "straight"
+			d.blade_type = "angle" if kind.begins_with("dozer_angle") else "straight"
+			match kind:
+				"dozer_xl":
+					d.size = 2.0
+					d.display_name = "Big bulldozer"
+				"dozer_angle_xl":
+					d.size = 2.0
+					d.display_name = "Big angle dozer"
+				"dozer_carry":
+					# The biggest: a huge high-wall U-blade that carries a small hill ahead of it.
+					d.size = 2.3
+					d.blade_width_mult = 1.3
+					d.blade_height_mult = 1.7
+					d.display_name = "Carry dozer"
 			d.terrain = terrain
 			return d
 		"trailer":
 			return Trailer.new()
+		"log_trailer":
+			var lt := Trailer.new()
+			lt.variant = "logs"
+			return lt
+		"conveyor":
+			var c := Conveyor.new()
+			c.terrain = terrain
+			c.receivers = _receivers
+			return c
 	var t := Truck.new()
 	t.kind = kind
 	t.terrain = terrain
+	t.receivers = _receivers
 	return t
 
 
@@ -710,7 +785,7 @@ func _create_vehicle(kind: String) -> Node3D:
 func spawn_vehicle(kind: String) -> Node3D:
 	if fleet_size() >= Career.MAX_FLEET:
 		return null
-	var is_trailer := kind == "trailer"
+	var is_trailer := kind == "trailer" or kind == "log_trailer"
 	var bay := _free_bay(is_trailer)
 	if bay.x == INF:
 		return null
@@ -822,13 +897,25 @@ func _free_bay(for_trailer: bool) -> Vector3:
 				break
 		if free and Vector2(player.position.x, player.position.z).distance_to(p) > 2.0:
 			return Vector3(p.x, p.y, k + 1)
+	if for_trailer:
+		# Trailer bays full (a road train needs several): use a machine bay with room round it.
+		for k in Scenery.SPAWN_BAYS.size():
+			var p := ZONE + Scenery.SPAWN_BAYS[k]
+			var free := true
+			for v in machines + trailers:
+				var q: Vector3 = v.global_position if v.is_inside_tree() else v.position
+				if Vector2(q.x, q.z).distance_to(p) < 7.0:
+					free = false
+					break
+			if free and Vector2(player.position.x, player.position.z).distance_to(p) > 3.0:
+				return Vector3(p.x, p.y, 100 + k)
 	return Vector3(INF, 0, 0)
 
 
 func _refresh_receivers() -> void:
 	_receivers.clear()
 	for m in machines:
-		if m is Truck and m.capacity > 0.0:
+		if (m is Truck and m.capacity > 0.0) or m is Conveyor:
 			_receivers.append(m)
 
 
@@ -878,7 +965,7 @@ func remote_request(peer: int, action: String, arg: Variant) -> void:
 				var puppet: Node3D = net._puppet_for(peer) if peer != 1 else player
 				if puppet.global_position.distance_to(t.ramp_point()) < 6.0:
 					t.toggle_ramps()
-					net.toast(peer, "Lowering the ramps" if t.ramps_down else "Raising the ramps")
+					net.toast(peer, _ramps_message(t))
 		"reset":
 			var v := vehicle_by_id(int(arg))
 			if v:
@@ -914,6 +1001,15 @@ func remote_request(peer: int, action: String, arg: Variant) -> void:
 				jobs.abandon()
 				net.toast_all("Job abandoned" + by, Hud.MUTED)
 				net.send_jobs()
+		"tie":
+			var a: Node3D = node_by_net_id(String(arg[1]))
+			var b: Node3D = node_by_net_id(String(arg[2]))
+			var who_at: Vector3 = net._puppets[peer].global_position if net._puppets.has(peer) else arg[3]
+			if a and b and who_at.distance_to(arg[3]) < 10.0 and who_at.distance_to(arg[4]) < 10.0:
+				net.toast(peer, ties.tie(String(arg[0]), a, arg[3], b, arg[4]))
+		"cut_tie":
+			if ties.cut(int(arg)):
+				net.toast(peer, "Cut")
 		"supply":
 			for item in Career.SUPPLIES:
 				if item.id == String(arg) and career.spend(int(item.price), String(item.name)):
@@ -988,8 +1084,71 @@ func client_exit() -> void:
 
 # --- Economy ------------------------------------------------------------------------------
 
+## Boulders lying about the map (the same on every machine): mostly plain rock, some
+## flecked with whatever ore lies under them, a hint of where to dig.
+func _scatter_boulders() -> void:
+	var rng := RandomNumberGenerator.new()
+	rng.seed = 9917
+	var placed := 0
+	var tries := 0
+	while placed < BOULDERS and tries < 600:
+		tries += 1
+		var p := Vector2(rng.randf_range(-470, 470), rng.randf_range(-470, 470))
+		if water.depth_at(p.x, p.y) > 0.0 or terrain.is_protected(p.x, p.y) or terrain.info_at(p.x, p.y).y > 0.3:
+			continue
+		if absf(p.x - ZONE.x) < 70.0 and absf(p.y - ZONE.y) < 60.0:
+			continue
+		var rich: Dictionary = Ores.richness(self, p, 2.5)
+		var kind := "rock"
+		var best := 0.0
+		for k in rich:
+			if float(rich[k]) > best:
+				best = rich[k]
+				kind = k
+		if kind != "rock" and rng.randf() > best * 6.0:
+			kind = "rock"
+		var at := Vector3(p.x, terrain.sample_height(p.x, p.y) + float(Ores.KINDS[kind].size) * 0.6, p.y)
+		var boulder := Ores.make_chunk(self, kind, Transform3D(Basis(Vector3.UP, rng.randf() * TAU), at))
+		if kind == "rock":
+			boulder.mass *= 3.0
+		debris.append(boulder)
+		placed += 1
+
+
+## Digging (host): every so much soil dug out of a patch below the topsoil is a chance of
+## turning up a chunk of ore there.
+func _on_soil_removed(at: Vector3, volume: float, depth: float) -> void:
+	if net.is_client() or depth < Ores.MIN_DEPTH or _restoring:
+		return
+	var key := Vector2i(floori(at.x / 2.0), floori(at.z / 2.0))
+	var dug: float = float(_dig_tally.get(key, 0.0)) + volume
+	if dug < Ores.DIG_PER_ROLL:
+		_dig_tally[key] = dug
+		return
+	_dig_tally[key] = dug - Ores.DIG_PER_ROLL
+	var kind: String = Ores.roll(self, Vector2(at.x, at.z), depth, _ore_rng)
+	if kind == "":
+		return
+	var spot := Vector3(at.x, terrain.get_height(at.x, at.z) + 0.6, at.z)
+	spawn_ore(kind, Transform3D(Basis(Vector3.UP, _ore_rng.randf() * TAU), spot))
+	if kind in ["silver", "gold", "gem"]:
+		net.toast_all("FOUND %s!  ·  worth $%d at the ore crusher (quarry)" % [String(Ores.KINDS[kind].name).to_upper(), int(Ores.KINDS[kind].value)], Hud.GOOD)
+
+
+func spawn_ore(kind: String, xform: Transform3D) -> RigidBody3D:
+	var id := next_body_id
+	next_body_id += 1
+	var chunk := Ores.make_chunk(self, kind, xform)
+	if net.is_client():
+		chunk.freeze_mode = RigidBody3D.FREEZE_MODE_KINEMATIC
+		chunk.freeze = true
+	_register_body(chunk, id)
+	net.send_ore(id, kind, xform)
+	return chunk
+
+
 func _on_shredded(value: int, label: String, _at: Vector3) -> void:
-	career.earn(value, "Shredded " + label)
+	career.earn(value, ("Crushed " if label in Ores.KINDS.values().map(func(k): return k.name) else "Shredded ") + label)
 	if label == "log":
 		career.stats.logs = int(career.stats.logs) + 1
 		jobs.notify("logs")
@@ -1008,6 +1167,7 @@ func _build_forests(rng: RandomNumberGenerator) -> void:
 	forests.name = "Forests"
 	forests.remote = _joining
 	add_child(forests)
+	forests.snow = SNOWFIELD
 	forests.setup(terrain)
 	var clear_of_sites := func(p: Vector2) -> bool:
 		if terrain.is_protected(p.x, p.y):
@@ -1020,7 +1180,7 @@ func _build_forests(rng: RandomNumberGenerator) -> void:
 		return p.distance_to(BORROW_MOUND) < 17.0 or p.distance_to(DEMOLITION) < 32.0 or p.distance_to(FARM) < 16.0 \
 				or p.distance_to(QUARRY) < 46.0
 	var dry := func(p: Vector2) -> bool:
-		return water.depth_at(p.x, p.y) > 0.0 or terrain.info_at(p.x, p.y).y > 0.25 or clear_of_sites.call(p)
+		return water.depth_at(p.x, p.y) > 0.0 or terrain.info_at(p.x, p.y).y > 0.25 or clear_of_sites.call(p) 				or Vector2(ICE_POND.x, ICE_POND.y).distance_to(p) < ICE_POND.z + 3.0
 	# Swamp trees stand in mud and shallow water.
 	var swampy := func(p: Vector2) -> bool:
 		return water.depth_at(p.x, p.y) > 0.35 or clear_of_sites.call(p)
@@ -1052,7 +1212,7 @@ func _update_anchors() -> void:
 			if v.get("driven"):
 				live.append(v.global_position)
 	for id in bodies:
-		var b: Node3D = bodies[id]
+		var b = bodies[id]
 		if is_instance_valid(b):
 			ground.append([b.global_position, 10.0])
 	for p in net._puppets.values():
@@ -1156,10 +1316,15 @@ func _unhandled_input(event: InputEvent) -> void:
 
 
 func _process(delta: float) -> void:
+	_update_snowfall()
 	_autosave_timer -= delta
 	if _autosave_timer <= 0.0:
 		_autosave_timer = AUTOSAVE_INTERVAL
 		save_world()
+	if not _driving and player.active and menu and not menu.is_open:
+		_handle_ties()
+	elif not _tie_pending.is_empty():
+		_cancel_tie()
 	if Input.is_action_just_pressed("restart") and not net.is_online():
 		save_world()
 		get_tree().reload_current_scene()
@@ -1190,7 +1355,7 @@ func _process(delta: float) -> void:
 				net.request("ramps", int(at_ramps.get_meta("net_id")))
 			else:
 				at_ramps.toggle_ramps()
-				hud.toast("Lowering the ramps" if at_ramps.ramps_down else "Raising the ramps")
+				hud.toast(_ramps_message(at_ramps))
 		elif nearest:
 			if net.is_client():
 				net.request("enter", int(nearest.get_meta("net_id")))
@@ -1214,7 +1379,10 @@ func _process(delta: float) -> void:
 		hud.set_machine(_driving.machine_name, remote_hud if net.is_client() else _driving.hud_info())
 		hud.set_prompt("", "")
 	elif at_ramps:
-		hud.set_prompt("interact", "RAISE THE RAMPS" if at_ramps.ramps_down else "LOWER THE RAMPS")
+		if at_ramps.variant == "logs":
+			hud.set_prompt("interact", "STRAP THE LOAD DOWN" if at_ramps.ramps_down else "RELEASE THE STRAPS")
+		else:
+			hud.set_prompt("interact", "RAISE THE RAMPS" if at_ramps.ramps_down else "LOWER THE RAMPS")
 	elif nearest and driver_name != "":
 		hud.set_prompt("", String(driver_name).to_upper() + " IS DRIVING THE " + String(nearest.machine_name).to_upper())
 	elif nearest:
@@ -1268,27 +1436,52 @@ func _use_utility(machine: Node3D, peer: int) -> void:
 		net.toast(peer, "Attachment: " + machine.cycle_attachment())
 	elif machine is Truck:
 		var t: Truck = machine
+		# The end of the train: the truck itself, or the last trailer behind it.
+		var last: Node3D = t
+		var count := 0
 		if t.trailer:
-			t.trailer.unhitch()
-			t.trailer = null
-			net.toast(peer, "Trailer unhitched")
-			return
+			last = t.trailer
+			count = 1
+			while is_instance_valid(last.rear):
+				last = last.rear
+				count += 1
+		var hook: Vector3 = t.hitch_point() if last == t else last.rear_hitch_point()
 		var best: Node3D = null
 		var best_d := INF
 		for tr in trailers:
-			if tr.towed_by == null:
-				var d: float = tr.hitch_point().distance_to(t.hitch_point())
+			if tr.towed_by == null and tr != last and tr != t.trailer:
+				var d: float = tr.hitch_point().distance_to(hook)
 				if d < best_d:
 					best_d = d
 					best = tr
 		if best and best_d < 3.5:
-			best.hitch(t, t.hitch_point())
-			t.trailer = best
-			net.toast(peer, "Trailer hitched")
-		elif best:
+			best.hitch(last, hook)
+			if last == t:
+				t.trailer = best
+			else:
+				last.rear = best
+			net.toast(peer, "Trailer hitched" if count == 0 else "Trailer %d hitched on behind" % (count + 1))
+			return
+		if t.trailer:
+			# Nothing to add: drop the last trailer in the train.
+			var before: Node3D = t if last == t.trailer else last.towed_by
+			last.unhitch()
+			if before == t:
+				t.trailer = null
+			else:
+				before.rear = null
+			net.toast(peer, "Trailer unhitched" if count == 1 else "Last trailer unhitched (%d left)" % (count - 1))
+			return
+		if best:
 			net.toast(peer, "Back the hitch up to the trailer's drawbar (%.0f m away)" % best_d)
 		else:
 			net.toast(peer, "No trailer nearby")
+
+
+func _ramps_message(t: Node3D) -> String:
+	if t.variant == "logs":
+		return "Load released" if t.ramps_down else "Load strapped down"
+	return "Lowering the ramps" if t.ramps_down else "Raising the ramps"
 
 
 ## Controller vibration follows what the machine is doing (digging, pushing, stuck).
@@ -1413,6 +1606,153 @@ func _add_demolition_site(site_name: String, center: Vector2, blocks: Array[Rigi
 
 ## Terrain changed: wake sleeping blocks so they fall into holes, and check whether any
 ## stumps have been dug free (the host decides that for everyone).
+## On foot: strap (G) or rope (R) the nearest thing, then press again at what to tie it
+## to; cut (X) the strap or rope you're standing by.
+func _handle_ties() -> void:
+	var hands := player.global_position + Vector3(0, 1.1, 0)
+	if Input.is_action_just_pressed("cut_tie"):
+		var id: int = ties.tie_near(hands, TIE_REACH)
+		if id < 0:
+			hud.toast("No strap or rope within reach", Hud.MUTED)
+		elif net.is_client():
+			net.request("cut_tie", id)
+		else:
+			ties.cut(id)
+			hud.toast("Cut", Hud.GOOD)
+	for kind in [Ties.STRAP, Ties.ROPE]:
+		if not Input.is_action_just_pressed(kind):
+			continue
+		var target := _tie_target(hands, _tie_pending.get("node") if _tie_pending.get("kind", "") == kind else null)
+		if target.is_empty() and not _tie_pending.is_empty() and _tie_pending.kind == kind:
+			_cancel_tie()
+			hud.toast("Put away", Hud.MUTED)
+			continue
+		if target.is_empty():
+			hud.toast("Nothing within reach to tie", Hud.MUTED)
+			continue
+		if _tie_pending.is_empty() or _tie_pending.kind != kind:
+			_tie_pending = {"kind": kind, "node": target.node, "local": (target.node as Node3D).to_local(target.point)}
+			hud.toast("%s hooked to the %s: now press %s at what to tie it to" % ["Strap" if kind == Ties.STRAP else "Rope",
+				ties._name(target.node), hud.key(kind)], Hud.ACCENT)
+			continue
+		var first: Node3D = _tie_pending.node
+		if not is_instance_valid(first) or first == target.node:
+			_cancel_tie()
+			hud.toast("Put away", Hud.MUTED)
+			continue
+		var pa := first.to_global(_tie_pending.local)
+		if net.is_client():
+			net.request("tie", [kind, net_id_of(first), net_id_of(target.node), pa, target.point])
+		else:
+			hud.toast(ties.tie(kind, first, pa, target.node, target.point), Hud.GOOD)
+		_cancel_tie()
+	if not _tie_pending.is_empty():
+		var first: Node3D = _tie_pending.node
+		if not is_instance_valid(first) or first.to_global(_tie_pending.local).distance_to(hands) > 40.0:
+			_cancel_tie()
+			return
+		if _tie_line == null:
+			_tie_line = MeshInstance3D.new()
+			var line := CylinderMesh.new()
+			line.top_radius = 0.02
+			line.bottom_radius = 0.02
+			line.height = 1.0
+			line.radial_segments = 6
+			_tie_line.mesh = line
+			_tie_line.material_override = ties._strap_material if _tie_pending.kind == Ties.STRAP else ties._rope_material
+			add_child(_tie_line)
+		ties._stretch(_tie_line, first.to_global(_tie_pending.local), hands, false, 0.0)
+
+
+func _cancel_tie() -> void:
+	_tie_pending = {}
+	if _tie_line:
+		_tie_line.queue_free()
+		_tie_line = null
+
+
+## The nearest thing in reach that can be tied, and the point on it: loose logs, stumps,
+## mats and rubble, any machine, truck or trailer, or a standing tree.
+func _tie_target(hands: Vector3, exclude: Node3D = null) -> Dictionary:
+	var best := {}
+	var best_d := TIE_REACH
+	var candidates: Array = machines + trailers
+	for id in bodies:
+		var b = bodies[id]
+		if is_instance_valid(b) and b.global_position.distance_to(hands) < 14.0:
+			candidates.append(b)
+	for tid in forests.live:
+		var tree: Node3D = forests.live[tid]
+		if is_instance_valid(tree) and tree.global_position.distance_to(hands) < 6.0:
+			candidates.append(tree)
+	for node in candidates:
+		var n := node as Node3D
+		if n == null or n == exclude or not n.is_inside_tree():
+			continue
+		var point: Vector3
+		if n.has_meta("grip"):
+			var g: Array = n.get_meta("grip")
+			point = Geometry3D.get_closest_point_to_segment(hands, n.to_global(g[0]), n.to_global(g[1]))
+		elif n.is_in_group("trees"):
+			point = n.global_position + Vector3(0, 1.1, 0)
+		elif n in bodies.values():
+			point = n.global_position
+		else:
+			# A vehicle: the nearest point on a rough box round it.
+			var local := n.to_local(hands)
+			local = Vector3(clampf(local.x, -1.3, 1.3), clampf(local.y, 0.6, 2.2), clampf(local.z, -4.5, 4.5))
+			point = n.to_global(local)
+		var d := point.distance_to(hands)
+		# Loose things (the log on the truck) win over the vehicle they're lying on.
+		var score := d * (0.6 if n in bodies.values() else 1.0)
+		if d < TIE_REACH and score < best_d:
+			best_d = score
+			best = {"node": n, "point": point}
+	return best
+
+
+## Light snow falls around the camera while it's in the snowy pine forest.
+func _update_snowfall() -> void:
+	if DisplayServer.get_name() == "headless":
+		return
+	var p := camera.global_position
+	var inside := Vector2(p.x, p.z).distance_to(Vector2(SNOWFIELD.x, SNOWFIELD.y)) < SNOWFIELD.z
+	if _snowfall == null:
+		if not inside:
+			return
+		_snowfall = GPUParticles3D.new()
+		_snowfall.amount = 700
+		_snowfall.lifetime = 6.0
+		_snowfall.preprocess = 6.0
+		_snowfall.visibility_aabb = AABB(Vector3(-30, -30, -30), Vector3(60, 45, 60))
+		_snowfall.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+		var process := ParticleProcessMaterial.new()
+		process.emission_shape = ParticleProcessMaterial.EMISSION_SHAPE_BOX
+		process.emission_box_extents = Vector3(28, 1, 28)
+		process.direction = Vector3.DOWN
+		process.spread = 12.0
+		process.initial_velocity_min = 1.0
+		process.initial_velocity_max = 2.0
+		process.gravity = Vector3(0.3, -0.6, 0.15)
+		process.turbulence_enabled = true
+		process.turbulence_noise_strength = 0.6
+		process.scale_min = 0.6
+		process.scale_max = 1.2
+		_snowfall.process_material = process
+		var flake := QuadMesh.new()
+		flake.size = Vector2(0.06, 0.06)
+		var mat := StandardMaterial3D.new()
+		mat.billboard_mode = BaseMaterial3D.BILLBOARD_PARTICLES
+		mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+		mat.albedo_color = Color(1, 1, 1, 0.9)
+		mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+		flake.material = mat
+		_snowfall.draw_pass_1 = flake
+		add_child(_snowfall)
+	_snowfall.global_position = p + Vector3(0, 14, 0)
+	_snowfall.emitting = inside
+
+
 func _on_terrain_changed(rect: Rect2) -> void:
 	if net and net.is_client():
 		return
@@ -1437,10 +1777,10 @@ func _settle_bodies_on_changed_ground() -> void:
 				hit[Vector2i(gx, gz)] = true
 	_changed_areas.clear()
 	for id in bodies:
-		var b: RigidBody3D = bodies[id]
+		var b = bodies[id]
 		if not is_instance_valid(b) or b.freeze:
 			continue
-		var p := b.global_position
+		var p: Vector3 = b.global_position
 		if hit.has(Vector2i(floori(p.x / GRID_M), floori(p.z / GRID_M))):
 			b.sleeping = false
 			_unbury(b)

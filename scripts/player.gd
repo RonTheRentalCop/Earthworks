@@ -30,6 +30,8 @@ const HELMET := Color(1.0, 0.83, 0.1)
 const SHIRT := Color(0.22, 0.28, 0.36)
 
 var camera: Camera3D
+## The ground, to keep the worker on top of it (set by main).
+var terrain: Node3D
 var active := true
 ## Multiplayer: another player's worker, moved by the network.
 var puppet := false
@@ -183,16 +185,32 @@ func _physics_process(delta: float) -> void:
 	elif not grounded:
 		velocity.y -= GRAVITY * delta
 	move_and_slide()
-	if global_position.y < -30.0:
-		global_position = Vector3(0, 10, 0)
-		velocity = Vector3.ZERO
-		reset_physics_interpolation()
+	_stay_on_ground()
 	if dir.length() > 0.1:
 		_model.rotation.y = lerp_angle(_model.rotation.y, atan2(-dir.x, -dir.z), 1.0 - exp(-TURN_SPEED * delta))
 	var accel := (Vector3(velocity.x, 0, velocity.z) - Vector3(_last_velocity.x, 0, _last_velocity.z)) / maxf(delta, 0.001)
 	_last_velocity = velocity
 	var forward := Vector3(-sin(_model.rotation.y), 0.0, -cos(_model.rotation.y))
 	_animate(delta, Vector2(velocity.x, velocity.z).length(), is_on_floor(), accel.dot(forward))
+
+
+## The ground's collision only holds things up from above and only exists where it's
+## been built, so: where it isn't built yet, stand on the ground's height instead of
+## dropping; and if the worker ever ends up under the surface (soil dumped on them, a
+## glitch), put them straight back on top, right where they are.
+func _stay_on_ground() -> void:
+	if terrain == null:
+		return
+	var p := global_position
+	var ground: float = terrain.get_height(p.x, p.z)
+	if not terrain.has_collision_at(p.x, p.z):
+		if p.y < ground + 0.02:
+			global_position.y = ground + 0.02
+			velocity.y = maxf(velocity.y, 0.0)
+	elif p.y < ground - 0.8:
+		global_position = Vector3(p.x, ground + 0.3, p.z)
+		velocity = Vector3.ZERO
+		reset_physics_interpolation()
 
 
 ## Walk / run cycle with bending knees and elbows, a bob, a lean into the stride and

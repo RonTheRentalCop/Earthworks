@@ -79,7 +79,7 @@ func attach(prefer: Vector3) -> String:
 		# Big things first, then closeness, then direction.
 		var score := d * (1.5 - 0.5 * to.normalized().dot(prefer.normalized()))
 		if candidate is VehicleBody3D or candidate is CharacterBody3D:
-			score *= 0.5
+			score *= 0.35  # a stuck machine beats the tree beside you
 		if score < best_score:
 			best_score = score
 			best = candidate

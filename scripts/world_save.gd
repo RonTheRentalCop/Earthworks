@@ -40,13 +40,16 @@ static func save(main: Node) -> bool:
 		var b: Node3D = main.debris[k]
 		debris.append(b.global_transform if is_instance_valid(b) and b.is_inside_tree() else null)
 	var mats := []
+	var ores := []
 	for id in main.bodies:
-		var b: Node3D = main.bodies[id]
+		var b = main.bodies[id]
 		if is_instance_valid(b) and b.get_meta("label", "") == "ground mat":
 			mats.append(b.global_transform)
+		elif is_instance_valid(b) and b.has_meta("ore") and int(id) >= main.FIRST_DYNAMIC_ID and b.is_inside_tree():
+			ores.append([b.get_meta("ore"), b.global_transform])
 	var data := {
 		"version": VERSION, "cells": terrain.CELLS, "trees": forests.count(),
-		"terrain": chunks, "tree_state": forests.state, "logs": logs, "debris": debris, "mats": mats,
+		"terrain": chunks, "tree_state": forests.state, "logs": logs, "debris": debris, "mats": mats, "ores": ores,
 	}
 	var raw := var_to_bytes(data)
 	var packed := raw.compress(FileAccess.COMPRESSION_ZSTD)
@@ -137,6 +140,10 @@ static func restore(main: Node) -> bool:
 		if xform is Transform3D and is_instance_valid(b):
 			b.global_transform = xform
 			b.sleeping = true
+		elif xform == null and is_instance_valid(b) and b.has_meta("ore"):
+			b.queue_free()  # a boulder that was sold at the crusher
+	for entry in data.get("ores", []):
+		main.spawn_ore(String(entry[0]), entry[1])
 	if not data.mats.is_empty():
 		for xform in data.mats:
 			var id: int = main.next_body_id

@@ -8,6 +8,8 @@ extends SceneTree
 
 const Net = preload("res://scripts/net.gd")
 const PASSWORD := "dig-deep-42"
+## Its own port, so the check never touches a real game being hosted on this PC.
+const PORT := 24699
 
 var role := "host"
 
@@ -57,7 +59,7 @@ func _host() -> void:
 				beat = Time.get_ticks_msec()
 				print("[host] settling: frame %d, %d sites" % [settle, t._slump_rects.size()])
 		print("[host] dug up the map before hosting: %d changed chunks (settled in %.0f s)" % [t.edited.size(), settle / 60.0])
-	main._on_host_requested(Net.DEFAULT_PORT, PASSWORD, "HostBot")
+	main._on_host_requested(PORT, PASSWORD, "HostBot")
 	print("[host] hosting: ", main.net.is_host())
 	var waited := 0
 	if "--wait" in OS.get_cmdline_user_args():
@@ -88,7 +90,7 @@ func _host() -> void:
 
 
 func _client(bad: bool) -> void:
-	Net.pending = {"mode": "join", "address": "127.0.0.1", "port": Net.DEFAULT_PORT,
+	Net.pending = {"mode": "join", "address": "127.0.0.1", "port": PORT,
 		"password": "wrong-pass" if bad else PASSWORD, "name": "BadBot" if bad else "Bot%d" % (randi() % 1000)}
 	var main = load("res://main.tscn").instantiate()
 	main.name = "Main"
@@ -142,5 +144,16 @@ func _client(bad: bool) -> void:
 	main.net.request("exit")
 	await _frames(30)
 	print("[client] out of the truck: %s" % (main.driving() == null))
+	# Rope the felled log to the truck (the host makes the tie; it shows up here).
+	var log: Node3D = null
+	for id in main.bodies:
+		if main.bodies[id].get_meta("label", "") in ["log", "prized log"]:
+			log = main.bodies[id]
+	if log:
+		main.player.global_position = truck.global_position + Vector3(2.5, 0, 0)
+		await _frames(30)
+		main.net.request("tie", ["rope", main.net_id_of(truck), main.net_id_of(log), truck.global_position + Vector3(0, 1, 0), main.player.global_position])
+		await _frames(60)
+		print("[client] rope tied by the host and drawn here: %d tie(s)" % main.ties.ties.size())
 	main.net.leave()
 	await _frames(30)

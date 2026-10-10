@@ -82,9 +82,16 @@ func _paint_block(bx: int, bz: int) -> void:
 			var south: float = terrain.info_at(wx, wz + 1.0).x
 			var shade := clampf(1.0 + ((east - info.x) - (south - info.x)) * 0.35, 0.55, 1.35)
 			var c := Color(0.62, 0.55, 0.32)
-			if info.z > 0.5:
+			var kind := roundi(info.z)
+			if info.w > 0.5:
+				c = Color(0.6, 0.38, 0.24)
+			elif kind == 1:
 				c = Color(0.6, 0.6, 0.58)
-			elif info.w > 0.5:
+			elif kind == 2:
+				c = Color(0.9, 0.92, 0.95)  # snow
+			elif kind == 3:
+				c = Color(0.65, 0.82, 0.92)  # ice
+			elif false:
 				c = Color(0.6, 0.38, 0.24)
 			if info.y > 0.2:
 				c = c.lerp(Color(0.3, 0.22, 0.15), info.y)

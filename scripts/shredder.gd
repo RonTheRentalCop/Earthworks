@@ -19,6 +19,8 @@ const BODY := Color(0.2, 0.42, 0.26)
 const ORANGE := Color(0.95, 0.5, 0.08)
 
 var machine_name := "Wood shredder"
+## What it takes: "shreddable" (logs and stumps) or "ore" (the ore crusher). Set before adding.
+var accepts := "shreddable"
 var total_shredded := 0
 ## Multiplayer: on joining players' machines the host decides what gets shredded.
 var remote := false
@@ -60,7 +62,7 @@ func _physics_process(delta: float) -> void:
 		_poll = 0.25
 		for body in _infeed.get_overlapping_bodies():
 			var rb := body as RigidBody3D
-			if rb and rb.is_in_group("shreddable") and not rb.freeze and not rb.has_meta("shredding"):
+			if rb and rb.is_in_group(accepts) and not rb.freeze and not rb.has_meta("shredding"):
 				_take(rb)
 	var busy := false
 	for entry in _feeding.duplicate():
@@ -119,7 +121,7 @@ func _grow_pile() -> void:
 
 
 func _build() -> void:
-	var body := Kit.paint(BODY)
+	var body := Kit.paint(BODY if accepts == "shreddable" else Color(0.45, 0.45, 0.47))
 	var dark := Kit.paint(Color(0.14, 0.14, 0.15), 0.6, 0.3)
 	var steel := Kit.metal(Color(0.55, 0.56, 0.58))
 	var orange := Kit.paint(ORANGE)
@@ -205,9 +207,11 @@ func _build() -> void:
 	for x in [-5.3, -2.3]:
 		Kit.box(parts, Vector3(0.15, 3.4, 0.15), Vector3(x, 1.7, -8.6), steel, 0.03)
 	Kit.box(parts, Vector3(3.4, 1.2, 0.1), Vector3(-3.8, 3.4, -8.6), Kit.paint(Color(0.98, 0.78, 0.15)), 0.03)
-	_sign_label = Kit.label(self, "WOOD SHREDDER\n$ FOR LOGS & STUMPS", Vector3(-3.8, 3.4, -8.67), 0.0024, Color(0.12, 0.1, 0.08), PI)
-	Kit.label(parts, "WOOD SHREDDER", Vector3(1.82, 2.4, 0.6), 0.0042, Color.WHITE, PI * 0.5)
-	Kit.label(parts, "WOOD SHREDDER", Vector3(-1.82, 2.4, 0.6), 0.0042, Color.WHITE, -PI * 0.5)
+	var title := "WOOD SHREDDER" if accepts == "shreddable" else "ORE CRUSHER"
+	var offer := "$ FOR LOGS & STUMPS" if accepts == "shreddable" else "$ FOR ORE & BOULDERS"
+	_sign_label = Kit.label(self, title + "\n" + offer, Vector3(-3.8, 3.4, -8.67), 0.0024, Color(0.12, 0.1, 0.08), PI)
+	Kit.label(parts, title, Vector3(1.82, 2.4, 0.6), 0.0042, Color.WHITE, PI * 0.5)
+	Kit.label(parts, title, Vector3(-1.82, 2.4, 0.6), 0.0042, Color.WHITE, -PI * 0.5)
 	Kit.merge_tree(self)
 	# Solid parts: the housing, engine house, infeed table and pad edge.
 	var solid := StaticBody3D.new()

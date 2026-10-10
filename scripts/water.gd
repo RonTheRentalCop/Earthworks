@@ -18,7 +18,9 @@ const FLOW := 0.2  # share of the level difference exchanged per tick
 const MOMENTUM := 0.55  # share of last tick's flow across an edge that carries on (water keeps moving)
 const MAX_SHARE := 0.24  # a cell gives at most this share of its depth to one neighbour
 const WET := 0.008
-const TILES_PER_FRAME := 3  # work budget per physics frame; with more awake tiles they take turns
+const TILES_PER_FRAME := 3  # far tiles per physics frame; with more awake tiles they take turns
+const NEAR_SIM := 90.0  # tiles within this of the camera run every frame...
+const SIM_BUDGET_USEC := 2500  # ...as many as fit in this
 const WAKE_LEVEL := 0.03  # level difference across a sleeping tile's edge that wakes it
 const CALM_EPS := 0.002  # depth change per tick below which a tile counts as settled
 const CALM_TICKS := 10
@@ -244,10 +246,31 @@ func _tick(delta: float) -> void:
 		depth[i] += s.y * delta / CELL_AREA
 	for i in _heads:
 		depth[i] = maxf(float(_heads[i]) - _ground[i], 0.0)
+	# Water near the camera runs every frame (so it visibly flows, fills holes and surges
+	# down channels), nearest first within a time budget; the rest take turns.
+	var start := Time.get_ticks_usec()
+	var near: Array = []
+	var done := {}
+	if focus and is_instance_valid(focus):
+		var f := Vector2(focus.global_position.x + Terrain.HALF_SIZE, focus.global_position.z + Terrain.HALF_SIZE) / (TILE * CELL)
+		var reach_sq := pow(NEAR_SIM / (TILE * CELL), 2.0)
+		for t in _awake_list:
+			var d := Vector2(t % TILES + 0.5, t / TILES + 0.5).distance_squared_to(f)
+			if d < reach_sq:
+				near.append(Vector2(d, t))
+		near.sort()
+	for entry in near:
+		if Time.get_ticks_usec() - start > SIM_BUDGET_USEC:
+			break
+		var t := int(entry.y)
+		_simulate_tile(t)
+		done[t] = true
 	var count := mini(_awake_list.size(), TILES_PER_FRAME)
 	var tiles: Array[int] = []
 	for k in count:
-		tiles.append(_awake_list[(_cursor + k) % _awake_list.size()])
+		var t: int = _awake_list[(_cursor + k) % _awake_list.size()]
+		if not done.has(t):
+			tiles.append(t)
 	_cursor = (_cursor + count) % maxi(_awake_list.size(), 1)
 	for t in tiles:
 		_simulate_tile(t)

@@ -23,7 +23,8 @@ const ATTACHMENTS := [
 ]
 const JAW_RATE := 1.6
 const GRAB_RADIUS := 1.9
-const GRAB_MASS := 4000.0  # heaviest loose thing the grapple will lift
+const GRAB_MASS := 9000.0  # heaviest loose thing the grapple will lift (a big oak log)
+const BUNDLE := 4  # most logs the grapple closes round at once
 const GRIP_CENTRE := Vector3(0, -1.1, 0)  # between the closed jaws, grapple space
 
 const MAX_SPEED := 4.5
@@ -131,6 +132,8 @@ var _grapple: Node3D
 var _jaws: Array[Node3D] = []
 var _jaw := 0.0  # 0 open .. 1 closed
 var _held_parent: Node
+## More logs closed in the jaws with `held`: [body, parent, from, to] (grapple space).
+var _bundle: Array = []
 var _grip_from := Transform3D()  # held thing relative to the grapple, as grabbed...
 var _grip_to := Transform3D()  # ...and settled in the jaws
 var _grip_t := 1.0
@@ -317,7 +320,11 @@ func _operate_grapple(delta: float) -> void:
 	elif held and _grip_t < 1.0:
 		# Settle the load into the jaws.
 		_grip_t = minf(_grip_t + delta / 0.25, 1.0)
-		held.global_transform = _grapple.global_transform * _grip_from.interpolate_with(_grip_to, smoothstep(0.0, 1.0, _grip_t))
+		var ease := smoothstep(0.0, 1.0, _grip_t)
+		held.global_transform = _grapple.global_transform * _grip_from.interpolate_with(_grip_to, ease)
+		for entry in _bundle:
+			if is_instance_valid(entry[0]):
+				(entry[0] as Node3D).global_transform = _grapple.global_transform * (entry[2] as Transform3D).interpolate_with(entry[3], ease)
 	elif held == null and _jaw > 0.85:
 		var best: Node3D = null
 		var best_d := GRAB_RADIUS * _k
@@ -337,6 +344,8 @@ func _operate_grapple(delta: float) -> void:
 			best = best.call("pull_out") if best.get("is_stump") else best.call("fell", best.global_position - global_position)
 		if best is RigidBody3D:
 			_grab(best)
+			if best.has_meta("grip"):
+				_grab_bundle(centre)
 
 
 func _grab(body: RigidBody3D) -> void:
@@ -346,6 +355,14 @@ func _grab(body: RigidBody3D) -> void:
 	var grip_local := body.to_local(_grip_point(body, centre))
 	body.remove_meta("awaiting_ground")
 	body.remove_meta("bedded")
+	if body.has_meta("tie_locked"):
+		var ties_node := get_tree().get_first_node_in_group("ties")
+		if ties_node:
+			ties_node.release(body)
+	if body.has_meta("strapped_to"):
+		var strap = body.get_meta("strapped_to")
+		if is_instance_valid(strap):
+			strap.unstrap(body)
 	body.freeze_mode = RigidBody3D.FREEZE_MODE_KINEMATIC
 	body.freeze = true
 	body.reparent(_grapple, true)
@@ -389,6 +406,61 @@ func _release() -> void:
 		held.freeze = false
 		held.sleeping = false
 	held = null
+	for entry in _bundle:
+		var body: RigidBody3D = entry[0]
+		if is_instance_valid(body):
+			body.reparent(entry[1] if is_instance_valid(entry[1]) else get_parent(), true)
+			body.freeze = false
+			body.sleeping = false
+	_bundle.clear()
+
+
+## Closing on a pile of logs takes the others lying in the jaws too (up to BUNDLE in all),
+## settled into a bundle round the first.
+func _grab_bundle(centre: Vector3) -> void:
+	var g: Array = held.get_meta("grip")
+	var held_axis := (held.global_basis * ((g[1] as Vector3) - (g[0] as Vector3))).normalized()
+	var picked := []
+	for node in get_tree().get_nodes_in_group("shreddable"):
+		var log := node as RigidBody3D
+		if log == null or log == held or log.freeze or not log.has_meta("grip") or not log.is_inside_tree():
+			continue
+		var lg: Array = log.get_meta("grip")
+		if lg[0] == lg[1] or log.mass > GRAB_MASS * _k * _k * _k:
+			continue  # logs only (stumps are one at a time)
+		var d := _grip_point(log, centre).distance_to(centre)
+		if d < GRAB_RADIUS * 1.25 * _k:
+			picked.append([d, log])
+	picked.sort_custom(func(a, b): return a[0] < b[0])
+	var slots := [Vector3(0, 0.5, 0.0), Vector3(0, 0.22, 0.42), Vector3(0, 0.22, -0.42)]
+	var jaws := _grapple.global_transform.orthonormalized()
+	for k in mini(picked.size(), BUNDLE - 1):
+		var log: RigidBody3D = picked[k][1]
+		var parent := log.get_parent()
+		var lg: Array = log.get_meta("grip")
+		var mid: Vector3 = ((lg[0] as Vector3) + (lg[1] as Vector3)) * 0.5
+		log.remove_meta("awaiting_ground")
+		if log.has_meta("tie_locked"):
+			var ties_node := get_tree().get_first_node_in_group("ties")
+			if ties_node:
+				ties_node.release(log)
+		if log.has_meta("strapped_to"):
+			var strap = log.get_meta("strapped_to")
+			if is_instance_valid(strap):
+				strap.unstrap(log)
+		log.freeze_mode = RigidBody3D.FREEZE_MODE_KINEMATIC
+		log.freeze = true
+		log.reparent(_grapple, true)
+		# Lie it alongside the first log, stacked in the jaws.
+		var basis := log.global_basis.orthonormalized()
+		var axis := (basis * ((lg[1] as Vector3) - (lg[0] as Vector3))).normalized()
+		var along := held_axis if axis.dot(held_axis) >= 0.0 else -held_axis
+		if axis.cross(along).length() > 0.0001:
+			basis = Basis(Quaternion(axis, along)) * basis
+		var spot: Vector3 = centre + jaws.basis * ((slots[k] as Vector3) * _k)
+		var settled := Transform3D(basis, spot - basis * mid)
+		_bundle.append([log, parent, _grapple.global_transform.affine_inverse() * log.global_transform,
+			_grapple.global_transform.affine_inverse() * settled])
 
 
 ## Two-tine log grapple hanging from the bucket pin (hidden until selected).
@@ -560,8 +632,9 @@ func hud_info() -> Dictionary:
 
 func _drive(delta: float) -> void:
 	var mud := terrain.mud_at(global_position.x, global_position.z)
-	_speed = move_toward(_speed, _axis("drive_back", "drive_forward") * MAX_SPEED * (1.0 - MUD_SLOW * mud) * _sunk_factor(), ACCELERATION * delta)
-	var turn := _axis("turn_right", "turn_left") * TURN_RATE * (1.0 - 0.4 * mud)
+	var ice := terrain.is_ice(global_position.x, global_position.z)  # tracks spin and slide
+	_speed = move_toward(_speed, _axis("drive_back", "drive_forward") * MAX_SPEED * (1.0 - MUD_SLOW * mud) * _sunk_factor(), ACCELERATION * (0.18 if ice else 1.0) * delta)
+	var turn := _axis("turn_right", "turn_left") * TURN_RATE * (1.0 - 0.4 * mud) * (0.6 if ice else 1.0)
 	rotate_y(turn * delta)
 	# Skid steer: turning slows one track and speeds up the other.
 	var track: Vector2 = (_rig.track as Vector2) * size_scale
@@ -1165,6 +1238,7 @@ func _kinematic_body(parent: Node3D) -> AnimatableBody3D:
 	body.collision_layer = ARM_LAYER
 	body.collision_mask = 0
 	parent.add_child(body)
+	body.set_meta("uproots", true)  # tracks and arm tear out stumps they shove into
 	return body
 
 

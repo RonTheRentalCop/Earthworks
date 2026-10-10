@@ -16,6 +16,9 @@ extends Node3D
 ## arrays as before.
 
 signal area_changed(world_rect: Rect2)
+## Soil dug out (by a bucket, blade or ripper) at a point: how much, and how deep below
+## the original ground the dig now is there (ore finds come from this).
+signal soil_removed(at: Vector3, volume: float, depth: float)
 signal chunk_rebuilt(cx: int, cz: int)
 
 const CELLS := 4096
@@ -47,6 +50,8 @@ const SKIRT := 1.5  # chunk edges hang a skirt this deep so LOD seams never show
 
 const GROUND := Color(0.66, 0.52, 0.27)  # under the grass
 const GRAVEL := Color(0.6, 0.57, 0.5)
+const SNOW := Color(0.9, 0.93, 0.97)
+const ICE := Color(0.66, 0.8, 0.88)
 const MUD := Color(0.27, 0.18, 0.11)
 const LOOSE := Color(0.56, 0.33, 0.2)  # dumped piles
 const TOPSOIL := Color(0.5, 0.29, 0.18)
@@ -56,6 +61,8 @@ const ROCK := Color(0.5, 0.47, 0.44)
 
 const SURFACE_SOIL := 0
 const SURFACE_GRAVEL := 1
+const SURFACE_SNOW := 2  # firm, white; shows the soil once dug or driven to mud
+const SURFACE_ICE := 3  # a frozen pond: slippery, nothing sinks
 
 # World features (recorded while laying out the world, replayed onto each block).
 const OP_MOUND := 0
@@ -67,14 +74,18 @@ const OP_GRAVEL := 5
 const OP_PROTECT := 6
 const OP_DISTURB := 7
 const OP_NOGRASS := 8
+const OP_SNOW := 9
+const OP_ICE := 10
 
 const SHADER := """
 shader_type spatial;
 render_mode cull_disabled;
 
-// COLOR.a = 1 on exposed soil (darkens on steep cuts), UV.x = wetness (mud shine).
+// COLOR.a = 1 on exposed soil (darkens on steep cuts), UV.x = wetness (mud shine),
+// UV.y = ice (glassy).
 varying vec3 world_pos;
 varying float wet;
+varying float ice;
 
 float hash(vec2 p) { return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }
 float value_noise(vec2 p) {
@@ -87,6 +98,7 @@ float value_noise(vec2 p) {
 void vertex() {
 	world_pos = (MODEL_MATRIX * vec4(VERTEX, 1.0)).xyz;
 	wet = UV.x;
+	ice = UV.y;
 }
 
 void fragment() {
@@ -100,8 +112,8 @@ void fragment() {
 	float puddle = smoothstep(0.55, 0.75, value_noise(world_pos.xz * 0.9)) * wet;
 	col *= 1.0 - puddle * 0.35;
 	ALBEDO = col;
-	ROUGHNESS = mix(1.0, 0.2, wet * (0.5 + 0.5 * puddle));
-	SPECULAR = mix(0.3, 0.7, wet);
+	ROUGHNESS = mix(mix(1.0, 0.2, wet * (0.5 + 0.5 * puddle)), 0.08 + 0.12 * n, ice);
+	SPECULAR = mix(mix(0.3, 0.7, wet), 0.9, ice);
 }
 """
 
@@ -110,7 +122,7 @@ var original := PackedFloat32Array()
 var disturbed := PackedByteArray()
 var grass_mask := PackedByteArray()  # 0 where grass never grows (water beds, yards)
 var mud := PackedFloat32Array()  # 0 dry .. 1 deep mud
-var surface := PackedByteArray()  # SURFACE_SOIL / SURFACE_GRAVEL
+var surface := PackedByteArray()  # SURFACE_SOIL / GRAVEL / SNOW / ICE
 var pressed := PackedByteArray()  # 1 = already rutted by tracks or wheels
 var protected := PackedByteArray()  # 1 = can't be dug below its original level (the depot)
 ## Detailed chunks load around this node (the camera).
@@ -294,6 +306,25 @@ func mark_disturbed(center: Vector2, radius: float) -> void:
 
 
 ## Stops grass growing within `radius` of `center`.
+## A snowfield: white ground (with a ragged edge), no grass, no mud.
+func paint_snow(center: Vector2, radius: float) -> void:
+	_record({"t": OP_SNOW, "c": center, "r": radius, "rect": Rect2(center - Vector2(radius, radius), Vector2(radius, radius) * 2.0)})
+
+
+## A frozen pond: glassy, slippery ice.
+func paint_ice(center: Vector2, radius: float) -> void:
+	_record({"t": OP_ICE, "c": center, "r": radius, "rect": Rect2(center - Vector2(radius, radius), Vector2(radius, radius) * 2.0)})
+
+
+## Whether a point is on ice (vehicles lose grip).
+func is_ice(wx: float, wz: float) -> bool:
+	return surface[_index_at(wx, wz)] == SURFACE_ICE
+
+
+static func _snow_edge(x: float, z: float) -> float:
+	return 0.86 + 0.14 * (sin(x * 0.061 + cos(z * 0.047) * 2.3) * 0.5 + 0.5)
+
+
 func clear_grass(center: Vector2, radius: float) -> void:
 	_record({"t": OP_NOGRASS, "c": center, "r": radius, "rect": Rect2(center - Vector2(radius, radius), Vector2(radius, radius) * 2.0)})
 
@@ -410,7 +441,7 @@ func _apply_op(op: Dictionary, r: Rect2i, update_original := true) -> void:
 	var x0 := r.position.x
 	var x1 := r.end.x
 	var t: int = op.t
-	if t == OP_MOUND or t == OP_RING or t == OP_MUD or t == OP_DISTURB or t == OP_NOGRASS:
+	if t == OP_MOUND or t == OP_RING or t == OP_MUD or t == OP_DISTURB or t == OP_NOGRASS or t == OP_SNOW or t == OP_ICE:
 		var cx: float = op.c.x
 		var cz: float = op.c.y
 		var rad: float = op.get("r", op.get("outer", 0.0))
@@ -442,6 +473,15 @@ func _apply_op(op: Dictionary, r: Rect2i, update_original := true) -> void:
 						disturbed[i] = 1
 					OP_NOGRASS:
 						grass_mask[i] = 0
+					OP_SNOW:
+						if d < rad * _snow_edge(dx, dz) and surface[i] != SURFACE_GRAVEL and surface[i] != SURFACE_ICE:
+							surface[i] = SURFACE_SNOW
+							grass_mask[i] = 0
+							mud[i] = 0.0
+					OP_ICE:
+						surface[i] = SURFACE_ICE
+						grass_mask[i] = 0
+						mud[i] = 0.0
 				if keep:
 					original[i] = heights[i]
 	elif t == OP_FLATTEN:
@@ -583,6 +623,15 @@ func _sample(x: int, z: int) -> Vector4:
 			OP_GRAVEL:
 				g = 1.0
 				m = 0.0
+			OP_SNOW:
+				var d := w.distance_to(op.c)
+				if d < op.r * _snow_edge(w.x - op.c.x, w.y - op.c.y) and g != 1.0 and g != 3.0:
+					g = 2.0
+					m = 0.0
+			OP_ICE:
+				if w.distance_to(op.c) < op.r:
+					g = 3.0
+					m = 0.0
 			OP_PROTECT:
 				p = 1.0
 	return Vector4(h, m, g, p)
@@ -783,6 +832,7 @@ func dig(center: Vector3, radius: float, max_volume: float) -> float:
 		disturbed[indices[k]] = 1
 		pressed[indices[k]] = 0
 	_on_edited(rect)
+	soil_removed.emit(center, total * CELL_AREA * scale_factor, dug_depth(center.x, center.z))
 	return total * CELL_AREA * scale_factor
 
 
@@ -853,6 +903,8 @@ func cut_flat(a: Vector3, b: Vector3, forward: Vector3, back: float, front: floa
 		disturbed[indices[k]] = 1
 		pressed[indices[k]] = 0
 	_on_edited(r)
+	var blade_mid := (a + b) * 0.5
+	soil_removed.emit(blade_mid, total * CELL_AREA * scale_factor, dug_depth(blade_mid.x, blade_mid.z))
 	return total * CELL_AREA * scale_factor
 
 
@@ -1170,12 +1222,15 @@ func _build_chunk(cx: int, cz: int) -> void:
 			var front := heights[i + VERTS] if z < VERTS - 1 else h
 			normals[k] = Vector3(left - right, two_cell, back - front).normalized()
 			var m := mud[i]
-			var gravel := surface[i] == SURFACE_GRAVEL
+			var kind := surface[i]
+			var gravel := kind == SURFACE_GRAVEL
 			var dug := original[i] - h
 			var c: Color
+			var glassy := 0.0
 			if disturbed[i] == 0 and absf(dug) < 0.03:
-				c = GRAVEL if gravel else GROUND
+				c = GRAVEL if gravel else (SNOW if kind == SURFACE_SNOW else (ICE if kind == SURFACE_ICE else GROUND))
 				c.a = 0.0
+				glassy = 1.0 if kind == SURFACE_ICE else 0.0
 			else:
 				if gravel:
 					c = GRAVEL.darkened(0.08)
@@ -1193,7 +1248,7 @@ func _build_chunk(cx: int, cz: int) -> void:
 				c = c.lerp(MUD, m * 0.85)
 				c.a = a
 			colors[k] = c
-			uvs[k] = Vector2(m, 0.0)
+			uvs[k] = Vector2(m, glassy)
 			k += 1
 	# Skirts: copies of the edge vertices, dropped down.
 	for edge in 4:
@@ -1250,7 +1305,7 @@ func _build_far_tile(t: int) -> void:
 				var w := grid_to_world(x, z)
 				var info := info_at(w.x, w.y)
 				verts[k] = Vector3(w.x, info.x - 0.04, w.y)
-				var c := GRAVEL if info.z > 0.5 else (LOOSE if info.w > 0.5 else GROUND)
+				var c: Color = LOOSE if info.w > 0.5 else [GROUND, GRAVEL, SNOW, ICE][clampi(roundi(info.z), 0, 3)]
 				c = c.lerp(MUD, info.y * 0.85)
 				c.a = info.w
 				colors[k] = c

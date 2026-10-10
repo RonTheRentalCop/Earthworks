@@ -4,7 +4,8 @@ extends VehicleBody3D
 ## tracked machines can drive up and ride on the deck (machines look for the "trailer
 ## deck" layer under their tracks and move with it); raise them for the road and they
 ## stand up like a tailgate. Hitch it to a truck (T / L3 near its drawbar); it brakes
-## itself when unhitched.
+## itself when unhitched. With the ramps up, everything on the deck (machines, trucks,
+## logs, mats) is strapped down and rides locked to it; lowering the ramps lets it go.
 ## VehicleBody3D faces +Z, so the model is built facing -Z under a node turned 180°.
 
 const Kit = preload("res://scripts/model_kit.gd")
@@ -25,6 +26,11 @@ const DECK := Color(0.5, 0.37, 0.24)
 const STEEL := Color(0.55, 0.56, 0.58)
 
 var machine_name := "Lowboy trailer"
+## "lowboy" (flat deck, loading ramps) or "logs" (log bunks with tall stakes; the
+## button at the back straps the load down instead of working ramps). Set before adding.
+var variant := "lowboy"
+## The trailer hitched behind this one (trailers chain into a road train).
+var rear: Node3D
 ## True builds only the model (shop thumbnails).
 var preview := false
 ## Multiplayer: a copy on a joining player's machine that follows the host.
@@ -44,6 +50,9 @@ var _ramp: Node3D
 var _ramp_shape: CollisionShape3D
 var _ramp_down_angle := 0.0
 var _front_wheels: Array[VehicleWheel3D] = []
+## What's strapped to the deck: node -> its transform relative to the trailer.
+var _strapped := {}
+var _straps_on := false
 
 
 func _ready() -> void:
@@ -54,7 +63,9 @@ func _ready() -> void:
 	center_of_mass = Vector3(0, 0.6, 0)
 	can_sleep = false
 	add_to_group("winchable")
-	set_meta("label", "trailer")
+	set_meta("label", "log trailer" if variant == "logs" else "trailer")
+	if variant == "logs":
+		machine_name = "Log trailer"
 	_model = Node3D.new()
 	_model.rotation.y = PI
 	add_child(_model)
@@ -80,9 +91,15 @@ func _physics_process(delta: float) -> void:
 		var angle := clampf(atan2(to_hitch.x, to_hitch.z), -0.6, 0.6)
 		for w in _front_wheels:
 			w.steering = angle
-	var target := _ramp_down_angle if ramps_down else RAMP_UP
-	_ramp.rotation.x = move_toward(_ramp.rotation.x, target, RAMP_RATE * delta)
-	_ramp_shape.transform = _model.transform * _ramp.transform * Transform3D(Basis.IDENTITY, Vector3(0, 0.0, RAMP_LENGTH * 0.5))
+	if variant != "logs":
+		var target := _ramp_down_angle if ramps_down else RAMP_UP
+		_ramp.rotation.x = move_toward(_ramp.rotation.x, target, RAMP_RATE * delta)
+		_ramp_shape.transform = _model.transform * _ramp.transform * Transform3D(Basis.IDENTITY, Vector3(0, 0.0, RAMP_LENGTH * 0.5))
+	if not ramps_down and not _straps_on:
+		_strap_load()  # as the ramps start up
+	elif ramps_down and _straps_on:
+		_release_load()
+	_carry_load()
 
 
 ## Multiplayer state (host -> joining players).
@@ -133,6 +150,100 @@ func ramp_point() -> Vector3:
 
 func toggle_ramps() -> void:
 	ramps_down = not ramps_down
+	if ramps_down and _straps_on:
+		_release_load()
+
+
+## Ramps up: whatever is resting on the deck gets strapped down.
+func _strap_load() -> void:
+	_straps_on = true
+	var inverse := global_transform.affine_inverse()
+	for node in get_tree().get_nodes_in_group("winchable"):
+		var n := node as Node3D
+		if n == null or n == self or n == towed_by or not n.is_inside_tree() or n.has_meta("strapped_to"):
+			continue
+		if n is RigidBody3D and (n as RigidBody3D).freeze:
+			continue  # held by a grapple, already carried, or a joining player's copy
+		var local := _model.to_local(n.global_position)
+		if absf(local.x) > DECK_WIDTH * 0.5 + 0.4 or absf(local.z - 0.5) > DECK_LENGTH * 0.5 + 0.3:
+			continue
+		if local.y < DECK_HEIGHT - 0.8 or local.y > DECK_HEIGHT + 5.0:
+			continue
+		_strapped[n] = inverse * n.global_transform
+		n.set_meta("strapped_to", self)
+		if n is RigidBody3D:
+			var b := n as RigidBody3D
+			b.set_meta("strap_freeze_mode", b.freeze_mode)
+			b.freeze_mode = RigidBody3D.FREEZE_MODE_KINEMATIC
+			b.freeze = true
+			# Riding locked to the deck it needn't touch it (a rigid load wedged into the
+			# deck would jam the trailer), nor the truck pulling it if it overhangs.
+			b.add_collision_exception_with(self)
+			if towed_by is PhysicsBody3D:
+				b.add_collision_exception_with(towed_by)
+				b.set_meta("strap_towed_by", towed_by)
+		else:
+			n.set_physics_process(false)  # a tracked machine: it rides, it doesn't drive
+
+
+## Keeps everything strapped down exactly where it sits on the deck.
+func _carry_load() -> void:
+	for n in _strapped.keys():
+		if not is_instance_valid(n) or not (n as Node3D).is_inside_tree():
+			_strapped.erase(n)
+			continue
+		(n as Node3D).global_transform = global_transform * (_strapped[n] as Transform3D)
+
+
+## Ramps down: the straps come off and everything carries on with the trailer's motion.
+func _release_load() -> void:
+	_straps_on = false
+	for n in _strapped.keys():
+		if not is_instance_valid(n):
+			continue
+		n.remove_meta("strapped_to")
+		if n is RigidBody3D:
+			var b := n as RigidBody3D
+			b.freeze_mode = b.get_meta("strap_freeze_mode", RigidBody3D.FREEZE_MODE_STATIC)
+			b.remove_meta("strap_freeze_mode")
+			_drop_exception(b)
+			b.freeze = false
+			b.linear_velocity = linear_velocity
+			b.angular_velocity = Vector3.ZERO
+		else:
+			n.set("_platform", null)  # it finds the deck afresh (no jump by the whole trip)
+			n.set_physics_process(true)
+	_strapped.clear()
+
+
+## Takes one thing out of the straps (a grapple lifting a log off the deck).
+func unstrap(n: Node) -> void:
+	if not _strapped.has(n):
+		return
+	_strapped.erase(n)
+	n.remove_meta("strapped_to")
+	if n is RigidBody3D:
+		var b := n as RigidBody3D
+		b.freeze_mode = b.get_meta("strap_freeze_mode", RigidBody3D.FREEZE_MODE_STATIC)
+		b.remove_meta("strap_freeze_mode")
+		_drop_exception(b)
+	else:
+		n.set("_platform", null)
+		n.set_physics_process(true)
+
+
+func _drop_exception(b: RigidBody3D) -> void:
+	b.remove_collision_exception_with(self)
+	if b.has_meta("strap_towed_by"):
+		var truck = b.get_meta("strap_towed_by")
+		if is_instance_valid(truck):
+			b.remove_collision_exception_with(truck)
+	b.remove_meta("strap_towed_by")
+
+
+## Whether a node is strapped to this trailer's deck.
+func is_strapped(n: Node) -> bool:
+	return _strapped.has(n)
 
 
 ## Lines the trailer up behind a truck with its drawbar eye on `hitch`.
@@ -176,13 +287,23 @@ func hitch(truck: RigidBody3D, truck_point: Vector3) -> void:
 	_joint.node_a = truck.get_path()
 	_joint.node_b = get_path()
 	towed_by = truck
+	if truck.get("variant") != null:
+		add_collision_exception_with(truck)  # a trailer behind a trailer: drawbar over its tail
 
 
 func unhitch() -> void:
 	if _joint:
 		_joint.queue_free()
 		_joint = null
+	if towed_by is PhysicsBody3D and towed_by is VehicleBody3D and towed_by.get("rear") == self:
+		remove_collision_exception_with(towed_by)
+		towed_by.set("rear", null)
 	towed_by = null
+
+
+## Where the next trailer's drawbar hooks on, at the back of this one.
+func rear_hitch_point() -> Vector3:
+	return _model.to_global(Vector3(0, 0.85, DECK_LENGTH * 0.5 + 0.5))
 
 
 func _build() -> void:
@@ -228,6 +349,9 @@ func _build() -> void:
 	Kit.label(_model, "EARTHWORKS CO.", Vector3(-DECK_WIDTH * 0.5 - 0.01, top - 0.17, 0), 0.006, Color.WHITE, -PI * 0.5)
 	Kit.label(_model, "EARTHWORKS CO.", Vector3(DECK_WIDTH * 0.5 + 0.01, top - 0.17, 0), 0.006, Color.WHITE, PI * 0.5)
 
+	if variant == "logs":
+		_build_log_bunks(top, half, paint, frame)
+		return
 	# Hydraulic ramps on a hinge at the back of the deck.
 	_ramp_down_angle = atan2(top, RAMP_LENGTH)
 	_ramp = Node3D.new()
@@ -248,6 +372,33 @@ func _build() -> void:
 	_shape(Vector3(DECK_WIDTH, 0.9, 0.2), Transform3D(Basis.IDENTITY, Vector3(0, top + 0.45, -half)))
 	_shape(Vector3(0.3, 0.25, 2.0), Transform3D(Basis.IDENTITY, Vector3(0, 0.85, -half - 1.0)))
 	_ramp_shape = _shape(Vector3(DECK_WIDTH, 0.12, RAMP_LENGTH), Transform3D.IDENTITY)
+
+
+## Log trailer: four bunks with tall stakes along the deck and a log guard at the front,
+## solid so logs dropped on it ride along. (No ramps: an empty ramp node keeps the shared
+## code happy.)
+func _build_log_bunks(top: float, half: float, paint: Material, frame: Material) -> void:
+	var steel := Kit.paint(Color(0.2, 0.2, 0.22), 0.5, 0.4)
+	for k in 4:
+		var z := -half + 1.0 + k * (DECK_LENGTH - 2.0) / 3.0
+		Kit.box(_model, Vector3(DECK_WIDTH, 0.2, 0.26), Vector3(0, top + 0.1, z), steel, 0.03)
+		for x in [-1.0, 1.0]:
+			Kit.box(_model, Vector3(0.14, 1.9, 0.14), Vector3(x * (DECK_WIDTH * 0.5 - 0.08), top + 1.05, z), paint, 0.03)
+			Kit.box(_model, Vector3(0.16, 0.16, 0.16), Vector3(x * (DECK_WIDTH * 0.5 - 0.08), top + 2.02, z), Kit.hazard(), 0.03)
+	for k in 6:
+		Kit.box(_model, Vector3(0.08, 1.4, 0.08), Vector3(-1.2 + k * 0.48, top + 1.2, -half), steel, 0.02)
+	Kit.label(_model, "TIMBER", Vector3(-DECK_WIDTH * 0.5 - 0.02, top + 0.4, 0), 0.006, Color.WHITE, -PI * 0.5)
+	Kit.label(_model, "TIMBER", Vector3(DECK_WIDTH * 0.5 + 0.02, top + 0.4, 0), 0.006, Color.WHITE, PI * 0.5)
+	_ramp = Node3D.new()
+	_ramp.position = Vector3(0, top, half)
+	_model.add_child(_ramp)
+	_shape(Vector3(DECK_WIDTH, 0.3, DECK_LENGTH), Transform3D(Basis.IDENTITY, Vector3(0, top - 0.15, 0)))
+	_shape(Vector3(0.14, 1.9, DECK_LENGTH), Transform3D(Basis.IDENTITY, Vector3(-(DECK_WIDTH * 0.5 - 0.08), top + 0.95, 0)))
+	_shape(Vector3(0.14, 1.9, DECK_LENGTH), Transform3D(Basis.IDENTITY, Vector3(DECK_WIDTH * 0.5 - 0.08, top + 0.95, 0)))
+	_shape(Vector3(DECK_WIDTH, 1.6, 0.2), Transform3D(Basis.IDENTITY, Vector3(0, top + 0.8, -half)))
+	_shape(Vector3(0.3, 0.25, 2.0), Transform3D(Basis.IDENTITY, Vector3(0, 0.85, -half - 1.0)))
+	_ramp_shape = _shape(Vector3(0.1, 0.1, 0.1), Transform3D(Basis.IDENTITY, Vector3(0, top, half)))
+	_ramp_shape.disabled = true
 
 
 ## Collision shapes are built in model space (facing -Z) and turned to match.

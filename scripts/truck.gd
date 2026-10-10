@@ -49,12 +49,29 @@ const KINDS := {
 		"axles": [[-2.3, 1.05, true, true, false], [1.5, 1.05, false, true, true], [2.7, 1.05, false, true, true]],
 		"capacity": 0.0, "winch": [Vector3(0, 3.45, 4.2), 220000.0, 35.0], "hitch": Vector3(0, 0.85, 3.75), "com": 0.9,
 	},
+	"recovery_xl": {
+		# Heavy 8x8 rotator wrecker: everything 1.3x a regular recovery truck (model units
+		# below are scaled by "scale"; wheels are placed in body space).
+		"name": "Heavy recovery truck", "paint": Color(0.95, 0.72, 0.08), "mass": 24000.0, "engine": 62000.0,
+		"top": 10.5, "loaded_top": 10.5, "reverse": 3.5, "steer": 0.45, "grip": 3.4, "mud_grip": 2.0, "bog": 0.1,
+		"radius": 0.72, "width": 0.6, "wheel_y": 1.25, "rest": 0.4, "scale": 1.3,
+		"axles": [[-3.2, 1.4, true, true, false], [-1.75, 1.4, true, true, false], [2.0, 1.4, false, true, true], [3.55, 1.4, false, true, true]],
+		"capacity": 0.0, "winch": [Vector3(0, 3.45, 4.2), 450000.0, 60.0], "hitch": Vector3(0, 0.85, 3.75), "com": 1.1,
+	},
 	"haul": {
 		"name": "Heavy haul tractor", "paint": Color(0.14, 0.3, 0.62), "mass": 11000.0, "engine": 40000.0,
 		"top": 17.0, "loaded_top": 17.0, "reverse": 4.0, "steer": 0.5, "grip": 3.3, "mud_grip": 0.5, "bog": 0.7,
 		"radius": 0.55, "width": 0.46, "wheel_y": 0.95, "rest": 0.35,
 		"axles": [[-2.3, 1.05, true, false, false], [1.5, 1.05, false, true, true], [2.7, 1.05, false, true, true]],
 		"capacity": 0.0, "winch": [Vector3(0, 1.0, -3.6), 120000.0, 25.0], "hitch": Vector3(0, 0.85, 3.75), "com": 0.85,
+	},
+	"log_semi": {
+		"name": "Logging semi", "paint": Color(0.55, 0.1, 0.08), "mass": 12500.0, "engine": 44000.0,
+		"top": 17.0, "loaded_top": 15.0, "reverse": 4.0, "steer": 0.5, "grip": 3.3, "mud_grip": 0.6, "bog": 0.6,
+		"radius": 0.55, "width": 0.46, "wheel_y": 0.95, "rest": 0.35,
+		"axles": [[-2.3, 1.05, true, false, false], [1.5, 1.05, false, true, true], [2.7, 1.05, false, true, true]],
+		"capacity": 0.0, "log_bed": true, "bed_pivot": Vector3(0, 1.45, 3.0),
+		"winch": [Vector3(0, 1.0, -3.6), 120000.0, 25.0], "hitch": Vector3(0, 0.85, 3.75), "com": 0.9,
 	},
 	"logs": {
 		"name": "Log truck", "paint": Color(0.18, 0.45, 0.27), "mass": 10000.0, "engine": 26000.0,
@@ -113,6 +130,9 @@ var payload := 0.0
 var material := 0
 var capacity := 0.0
 var stuck := false
+## Things a tipped load can pour into instead of the ground (a conveyor's hopper, another
+## truck's body); set by main.
+var receivers: Array = []
 ## How far (m) the wheels have sunk into mud. Builds up while a heavy truck sits or
 ## crawls in mud, cuts the drive, and only clears on firm ground or under a winch.
 var bog := 0.0
@@ -143,16 +163,17 @@ var _handbrake := false
 
 
 func _ready() -> void:
-	if recovery:
+	if recovery and kind != "recovery_xl":
 		kind = "recovery"
 	_spec = KINDS[kind]
-	recovery = kind == "recovery"
+	recovery = kind == "recovery" or kind == "recovery_xl"
 	machine_name = "Broken-down truck" if broken else String(_spec.name)
 	_paint = _spec.paint
 	capacity = _spec.capacity
 	_bed_half = _spec.get("bed_half", Vector2.ONE)
 	_bed_height = _spec.get("bed_height", 1.0)
 	_build_model()
+	_model.scale = Vector3.ONE * float(_spec.get("scale", 1.0))
 	for a in _spec.axles:
 		for side in [-1.0, 1.0]:
 			_add_wheel(Vector3(side * float(a[1]), _spec.wheel_y, -float(a[0])), a[2], a[3], a[4])
@@ -172,7 +193,7 @@ func _ready() -> void:
 	center_of_mass = Vector3(0, _spec.com, 0)
 	can_sleep = false
 	_add_collisions()
-	if kind == "logs":
+	if _spec.has("log_bed"):
 		# Slick steel bunks: logs hold on the flat but slide off when the bed tips.
 		physics_material_override = PhysicsMaterial.new()
 		physics_material_override.friction = 0.22
@@ -268,7 +289,7 @@ func place(xform: Transform3D) -> void:
 
 ## Where a winch cable or tow strap hooks on: the front or rear hook, whichever is nearer.
 func tow_point(from: Vector3) -> Vector3:
-	var front := _model.to_global(_spec.winch[0] if kind != "recovery" else Vector3(0, 1.0, -3.6))
+	var front := _model.to_global(_spec.winch[0] if not recovery else Vector3(0, 1.0, -3.6))
 	var rear := _model.to_global(_spec.hitch)
 	return front if front.distance_to(from) < rear.distance_to(from) else rear
 
@@ -388,7 +409,7 @@ func hud_info() -> Dictionary:
 	if capacity > 0.0:
 		info.load = payload / capacity
 		info.load_text = "BED %.1f / %.0f m³%s" % [payload, capacity, "  GRAVEL" if material == Terrain.SURFACE_GRAVEL and payload > 0.05 else ""]
-	elif kind == "logs":
+	elif _spec.has("log_bed"):
 		info.load = clampf(_bed.rotation.x / BED_MAX, 0.0, 1.0)
 		info.load_text = "BED TIP %d%%" % roundi(info.load * 100.0)
 	if winch and winch.is_attached():
@@ -451,6 +472,8 @@ func _handle_mud(delta: float, throttle: float, speed: float) -> void:
 		total += m
 		var sink := clampf(m * (0.45 + 0.4 * load), 0.0, 1.0)
 		w.wheel_friction_slip = lerpf(_spec.grip, float(_spec.mud_grip) * (1.0 - 0.3 * clampf(load - 1.0, 0.0, 1.5)), m)
+		if terrain.is_ice(w.global_position.x, w.global_position.z):
+			w.wheel_friction_slip = float(_spec.grip) * 0.22  # sheet ice: barely any grip
 		w.wheel_rest_length = lerpf(_spec.rest, float(_spec.rest) * 0.3, sink)
 	mud_level = total / _wheels.size()
 	_sink_wheels(delta, load, speed)
@@ -541,7 +564,12 @@ func _operate_bed(delta: float) -> void:
 			payload -= amount
 			_update_load()
 			var drop := _bed.to_global(Vector3(0, -0.6, 1.0))
-			terrain.deposit(drop.x, drop.z, amount, 1.4 + _bed_half.x * 0.2, material)
+			for r in receivers:
+				if is_instance_valid(r) and r != self and r.accepts_soil(drop):
+					amount -= r.add_soil(amount, material)
+					break
+			if amount > 0.0:
+				terrain.deposit(drop.x, drop.z, amount, 1.4 + _bed_half.x * 0.2, material)
 			_pour.global_position = Vector3(drop.x, terrain.get_height(drop.x, drop.z), drop.z)
 		_pour.emitting = pouring
 		if absf(payload - _heap_fill) > 0.04:
@@ -681,9 +709,12 @@ func _build_model() -> void:
 			_build_cab_truck()
 			match kind:
 				"dump": _build_dump_body(_spec.bed_pivot)
-				"recovery": _build_wrecker()
+				"recovery", "recovery_xl": _build_wrecker()
 				"haul": _build_haul()
 				"logs": _build_log_bed()
+				"log_semi":
+					_build_log_bed()
+					_build_semi_stacks()
 	if _bed:
 		Kit.add(_hoist, Kit.cylinder(0.12, 1.0, 12, 0.08), Vector3(0, 0.5, 0), Kit.metal(Color(0.8, 0.8, 0.82)))
 	else:
@@ -857,6 +888,14 @@ func _build_log_bed() -> void:
 		shape.transform = _model.transform * _bed.transform * local
 
 
+## The logging semi's twin chrome stacks and its name on the doors.
+func _build_semi_stacks() -> void:
+	var chrome := Kit.metal(Color(0.85, 0.85, 0.87))
+	for x in [-1.0, 1.0]:
+		Kit.add(_model, Kit.cylinder(0.1, 2.6, 14), Vector3(x * 1.08, 2.45, -0.75), chrome)
+		Kit.label(_model, "LOGGING", Vector3(x * 1.2, 1.55, -1.75), 0.004, Color.WHITE, PI * 0.5 * x)
+
+
 ## Heavy-haul tractor: sleeper cab, twin chrome stacks, ballast box over the drive axles.
 func _build_haul() -> void:
 	var paint := Kit.paint(_paint)
@@ -990,6 +1029,28 @@ func _arch(inner: float, outer: float) -> PackedVector2Array:
 
 ## Recovery body: deck, roller-shutter toolboxes, an A-frame boom with the winch sheave,
 ## lift rams, the winch drum, an underlift and outriggers at the back.
+## The heavy wrecker's extra kit: a rotating crane base with a second, longer boom over
+## the first, twin winch drums, folding stabiliser legs each side, chevrons and beacons.
+func _build_heavy_wrecker_extras(paint: Material, dark: Material, chrome: Material) -> void:
+	var black := Kit.matte(Color(0.08, 0.08, 0.09))
+	Kit.axle(_model, 0.7, 0.35, Vector3(0, 2.45, 1.2), dark, 24)  # rotator turntable
+	Kit.box(_model, Vector3(1.5, 0.6, 1.6), Vector3(0, 2.85, 1.2), paint, 0.08)
+	for x in [-1.0, 1.0]:
+		Kit.beam(_model, Vector3(x * 0.45, 3.0, 0.8), Vector3(x * 0.25, 4.3, 4.6), 0.24, paint)  # upper boom
+		Kit.beam(_model, Vector3(x * 0.5, 2.9, 1.8), Vector3(x * 0.35, 3.7, 3.0), 0.11, chrome)  # its ram
+		# Stabiliser legs folded down at the back and middle.
+		for z in [0.2, 3.3]:
+			Kit.box(_model, Vector3(0.9, 0.22, 0.26), Vector3(x * 1.55, 1.05, z), Kit.hazard(), 0.03)
+			Kit.box(_model, Vector3(0.2, 0.75, 0.2), Vector3(x * 1.95, 0.7, z), black, 0.03)
+			Kit.box(_model, Vector3(0.5, 0.06, 0.5), Vector3(x * 1.95, 0.32, z), dark, 0.02)
+	for k in 2:
+		Kit.axle(_model, 0.3, 0.7, Vector3(-0.45 + k * 0.9, 2.25, 2.3), dark, 18)  # twin winch drums
+	Kit.box(_model, Vector3(2.5, 0.35, 0.2), Vector3(0, 1.05, 4.62), Kit.hazard(), 0.04)  # chevron board
+	for x in [-1.1, 1.1]:
+		Kit.add(_model, Kit.cylinder(0.12, 0.2, 12), Vector3(x, 3.32, -1.95), Kit.glow(Color(1.0, 0.55, 0.05), 2.4))
+	Kit.label(_model, "HEAVY RECOVERY", Vector3(0, 3.28, -2.12), 0.004, Color(0.1, 0.1, 0.1), PI)
+
+
 func _build_wrecker() -> void:
 	var paint := Kit.paint(_paint)
 	var white := Kit.paint(Color(0.93, 0.93, 0.9))
@@ -1016,6 +1077,8 @@ func _build_wrecker() -> void:
 		Kit.axle(_model, 0.34, 0.06, Vector3(-0.4 + k * 0.2, 1.85, 0.4), Kit.matte(Color(0.08, 0.08, 0.08)), 18)
 	Kit.box(_model, Vector3(0.3, 0.2, 1.4), Vector3(0, 0.75, 3.9), dark, 0.04)
 	Kit.box(_model, Vector3(1.3, 0.18, 0.22), Vector3(0, 0.78, 4.55), Kit.hazard(), 0.04)
+	if kind == "recovery_xl":
+		_build_heavy_wrecker_extras(paint, dark, chrome)
 	# Roof light bar.
 	Kit.box(_model, Vector3(1.7, 0.1, 0.3), Vector3(0, 3.2, -1.95), dark, 0.03)
 	for k in 4:

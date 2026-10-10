@@ -35,10 +35,12 @@ const BAD := Color(0.98, 0.36, 0.28)
 const TABS := ["MACHINES", "TOOLS", "JOBS", "FLEET"]
 const CONTROLS := [
 	["ON FOOT", ""], ["Walk", "W A S D  ·  Left stick"], ["Jump", "Space  ·  A"], ["Use / get in", "F  ·  X"],
+	["Ratchet strap (press at the thing, then at what to tie it to)", "G  ·  LB"], ["Rope (same)", "R  ·  RB"],
+	["Cut a strap or rope", "X  ·  B"],
 	["Camera", "Right-drag, Q E I K  ·  Right stick"], ["Depot (hire, jobs)", "Tab  ·  View"], ["Menu", "Esc  ·  Menu"],
 	["MACHINES", ""], ["Drive", "W A S D  ·  Left stick"], ["Boom · swing / blade · bed", "I K · Q E  ·  Right stick"],
 	["Stick in / out", "J L  ·  LB RB"], ["Bucket curl / dump", "U O  ·  RT LT"], ["Handbrake (trucks)", "Space  ·  A"],
-	["Winch (tap hook, hold reel)", "H  ·  B"], ["Tool swap / hitch trailer", "N or T  ·  L3"], ["Cab view", "V  ·  R3"],
+	["Winch (tap hook, hold reel)", "H  ·  B"], ["Tool swap / hitch (and chain) trailers", "N or T  ·  L3"], ["Cab view", "V  ·  R3"],
 	["Look around in cab", "Hold Alt + mouse  ·  D-pad"], ["Reset machine", "Backspace  ·  Fleet tab"],
 	["MOUSE ONLY", ""], ["Left drag", "Boom + swing  ·  blade  ·  bed"], ["Right drag", "Stick + bucket  ·  blade tilt"],
 	["Both / middle drag", "Drive + steer"], ["Wheel", "Zoom  ·  all the way in = cab view"],
@@ -594,11 +596,13 @@ func _render_thumbnails() -> void:
 			"excavator_xl":
 				node = Excavator.new()
 				node.size_scale = 2.0
-			"dozer", "dozer_angle":
-				node = Bulldozer.new()
-				node.blade_type = "angle" if kind == "dozer_angle" else "straight"
+			"dozer", "dozer_angle", "dozer_xl", "dozer_angle_xl", "dozer_carry", "conveyor":
+				node = main._create_vehicle(kind)  # the same machine the game builds
 			"trailer":
 				node = Trailer.new()
+			"log_trailer":
+				node = Trailer.new()
+				node.variant = "logs"
 			_:
 				node = Truck.new()
 				node.kind = kind
@@ -619,10 +623,13 @@ func _render_thumbnails() -> void:
 		var cam := Camera3D.new()
 		cam.fov = 30.0
 		vp.add_child(cam)
-		var reach: float = {"excavator": 17.0, "excavator_xl": 24.0, "trailer": 19.0, "adt": 17.0, "pickup": 11.0, "dozer": 17.0, "dozer_angle": 17.0}.get(kind, 14.5)
+		# Each family is framed from the same distance, so the big versions look big.
+		var reach: float = {"excavator": 22.0, "excavator_xl": 22.0, "trailer": 19.0, "log_trailer": 19.0, "adt": 17.0, "pickup": 11.0,
+			"dozer": 26.0, "dozer_angle": 26.0, "dozer_xl": 26.0, "dozer_angle_xl": 26.0, "dozer_carry": 26.0,
+			"recovery": 19.0, "recovery_xl": 19.0, "conveyor": 34.0, "log_semi": 17.0}.get(kind, 14.5)
 		var look := Vector3(0, 1.6 if kind != "pickup" else 0.9, 0)
 		cam.position = look + Vector3(-0.62, 0.34, -0.7).normalized() * reach
-		if kind in ["dozer", "dozer_angle", "excavator", "excavator_xl"]:
+		if kind in ["dozer", "dozer_angle", "dozer_xl", "dozer_angle_xl", "dozer_carry", "excavator", "excavator_xl"]:
 			cam.position = look + Vector3(-0.62, 0.34, 0.7).normalized() * reach
 		cam.look_at_from_position(cam.position, look)
 		_thumbs[kind] = vp.get_texture()

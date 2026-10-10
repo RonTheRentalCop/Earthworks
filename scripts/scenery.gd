@@ -50,6 +50,82 @@ static func pine_mesh(foliage: Color) -> ArrayMesh:
 	return Kit.flatten_plain(mesh)
 
 
+## A pine in the snow: the same tiers, each carrying a white cap of snow.
+static func snowy_pine_mesh(foliage: Color) -> ArrayMesh:
+	var trunk := CylinderMesh.new()
+	trunk.top_radius = 0.14
+	trunk.bottom_radius = 0.24
+	trunk.height = 1.6
+	trunk.radial_segments = 8
+	var cones: Array = []
+	var caps: Array = []
+	for c in [[1.5, 2.4, 2.1], [1.15, 2.1, 3.4], [0.8, 1.8, 4.6], [0.45, 1.3, 5.6]]:
+		var cone := CylinderMesh.new()
+		cone.top_radius = 0.0
+		cone.bottom_radius = c[0]
+		cone.height = c[1]
+		cone.radial_segments = 12
+		cone.rings = 1
+		cones.append([cone, Vector3(0, c[2], 0)])
+		# Snow sits on the upper part of each tier, a touch proud of the needles.
+		var cap := CylinderMesh.new()
+		cap.top_radius = 0.0
+		cap.bottom_radius = c[0] * 0.62
+		cap.height = c[1] * 0.6
+		cap.radial_segments = 12
+		cap.rings = 1
+		caps.append([cap, Vector3(0, c[2] + c[1] * 0.22, 0)])
+	var mesh := ArrayMesh.new()
+	_merge_surface(mesh, [[trunk, Vector3(0, 0.8, 0)]], Color(0.4, 0.26, 0.16))
+	_merge_surface(mesh, cones, foliage.darkened(0.15))
+	_merge_surface(mesh, caps, Color(0.93, 0.95, 0.98))
+	return Kit.flatten_plain(mesh)
+
+
+## A broadleaf tree in winter: bare limbs (its leaves have fallen) dusted with snow.
+static func winter_tree_mesh() -> ArrayMesh:
+	var trunk := CylinderMesh.new()
+	trunk.top_radius = 0.12
+	trunk.bottom_radius = 0.26
+	trunk.height = 3.4
+	trunk.radial_segments = 8
+	var limbs: Array = []
+	var snow: Array = []
+	for k in 7:
+		var limb := CylinderMesh.new()
+		limb.top_radius = 0.025
+		limb.bottom_radius = 0.09
+		limb.height = 1.6 - k * 0.1
+		limb.radial_segments = 5
+		var around := Basis(Vector3.UP, k * 2.39)
+		var tilt := Basis(Vector3.RIGHT, 0.75)
+		var base := Vector3(0, 2.0 + k * 0.32, 0)
+		limbs.append([limb, around * tilt, base + around * tilt * Vector3(0, limb.height * 0.5, 0)])
+		var drift := CylinderMesh.new()
+		drift.top_radius = 0.035
+		drift.bottom_radius = 0.06
+		drift.height = limb.height * 0.7
+		drift.radial_segments = 5
+		snow.append([drift, around * tilt, base + around * tilt * Vector3(0, limb.height * 0.55, 0) + Vector3(0, 0.07, 0)])
+	var mesh := ArrayMesh.new()
+	_merge_surface(mesh, [[trunk, Vector3(0, 1.7, 0)]], Color(0.36, 0.27, 0.2))
+	_merge_surface_turned(mesh, limbs, Color(0.36, 0.27, 0.2))
+	_merge_surface_turned(mesh, snow, Color(0.93, 0.95, 0.98))
+	return Kit.flatten_plain(mesh)
+
+
+static func _merge_surface_turned(mesh: ArrayMesh, parts: Array, color: Color) -> void:
+	var tool := SurfaceTool.new()
+	tool.begin(Mesh.PRIMITIVE_TRIANGLES)
+	for part in parts:
+		tool.append_from(part[0], 0, Transform3D(part[1], part[2]))
+	tool.commit(mesh)
+	var material := StandardMaterial3D.new()
+	material.albedo_color = color
+	material.roughness = 0.9
+	mesh.surface_set_material(mesh.get_surface_count() - 1, material)
+
+
 static func broadleaf_mesh(foliage: Color) -> ArrayMesh:
 	var trunk := CylinderMesh.new()
 	trunk.top_radius = 0.16
