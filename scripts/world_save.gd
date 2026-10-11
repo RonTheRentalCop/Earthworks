@@ -143,7 +143,8 @@ static func restore(main: Node) -> bool:
 		elif xform == null and is_instance_valid(b) and b.has_meta("ore"):
 			b.queue_free()  # a boulder that was sold at the crusher
 	for entry in data.get("ores", []):
-		main.spawn_ore(String(entry[0]), entry[1])
+		if String(entry[0]).ends_with("_bar"):  # (old saves' loose ore chunks are gone: ore is in the soil now)
+			main.spawn_ore(String(entry[0]), entry[1])
 	if not data.mats.is_empty():
 		for xform in data.mats:
 			var id: int = main.next_body_id

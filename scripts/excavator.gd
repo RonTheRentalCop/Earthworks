@@ -22,7 +22,12 @@ const ATTACHMENTS := [
 	{"name": "Trench bucket", "scale": 0.75, "capacity": 1.5},
 	{"name": "Tree grapple", "scale": 1.0, "capacity": 0.0},
 	{"name": "Trench saw", "scale": 1.0, "capacity": 0.0, "saw": true},
+	{"name": "Magnet", "scale": 1.0, "capacity": 0.0, "magnet": true},
 ]
+## Magnet: a round electromagnet that hangs plumb. Right trigger (curl) switches it on and
+## it picks up the bars (anything magnetic) under it; left trigger (dump) lets them go.
+const MAGNET_REACH := 1.6
+const MAGNET_HOLD := 8
 ## Trench saw: a chain-saw bar that hangs plumb from the stick. Lower it into the ground
 ## and drag it along: it slices a narrow trench as deep as the bar reaches and throws the
 ## spoil out beside it.
@@ -81,7 +86,7 @@ var preview := false
 ## mining excavator). Bucket size, digging rate and reach all grow with it.
 var size_scale := SCALE
 ## Attachments the player owns (indices into ATTACHMENTS).
-var allowed_attachments: Array = [0, 1, 2, 3, 4]
+var allowed_attachments: Array = [0, 1, 2, 3, 4, 5]
 ## Mouse joystick output (mouse_controls.gd): positive action name -> -1..1.
 var mouse_input := {}
 ## Multiplayer: `remote` = driven by another player's controls (remote_axes, sent from
@@ -105,8 +110,11 @@ var receivers: Array = []
 var bucket_load := 0.0
 ## What's in the bucket (Terrain.SURFACE_SOIL / SURFACE_GRAVEL), by majority.
 var bucket_material := 0
-var bucket_ore: Array = []  # ore kinds dug up with the soil, riding in the bucket
-var _ore_views: Array = []
+## The ore in what's in the bucket ($, and how much of that is gold), and the band the
+## teeth are in now.
+var bucket_value := 0.0
+var bucket_gold := 0.0
+var digging_band := 0
 var _gravel_in_bucket := 0.0
 var soil_moved := 0.0
 var stalled := false  # soil is currently stopping the bucket
@@ -144,6 +152,11 @@ var _saw_chain: Node3D
 var _saw_spin := 0.0
 var _saw_side := 1.0
 var sawing := false
+var _magnet: Node3D
+var _magnet_glow: StandardMaterial3D
+var magnet_on := false
+var _magnet_held: Array = []  # [body, transform in magnet space, collision layer]
+var _magnet_timer := 0.0
 var _jaws: Array[Node3D] = []
 var _jaw := 0.0  # 0 open .. 1 closed
 var _held_parent: Node
@@ -207,6 +220,7 @@ func _ready() -> void:
 	_build_dirt_fx()
 	_build_grapple()
 	_build_saw()
+	_build_magnet()
 	# Parts that move together draw as one mesh (a few calls per joint instead of ~45).
 	Kit.merge_tree(_visual)
 	winch = Winch.new()
@@ -261,6 +275,8 @@ func _physics_process(delta: float) -> void:
 		_operate_grapple(delta)
 	elif _saw.visible:
 		_operate_saw(delta)
+	elif _magnet.visible:
+		_operate_magnet(delta)
 	else:
 		_spill(delta)
 	_rut()
@@ -296,49 +312,8 @@ func _rut() -> void:
 		terrain.press(global_position + global_basis.x * side * track.y, fwd, track.x + 0.2, TRACK_WIDTH * size_scale * 0.5, RUT_DEPTH)
 
 
-## Swaps to the next attachment (only with an empty bucket / open grapple).
-## Ore turned up by the bucket goes in with the soil (not with the grapple on).
-func take_ore(kind: String) -> bool:
-	if _grapple.visible or _saw.visible or bucket_ore.size() >= 6:
-		return false
-	bucket_ore.append(kind)
-	_show_ore()
-	return true
-
-
-## The rocks tumble out first when the bucket tips: into a truck under it, or onto the
-## ground (or the ore crusher) as loose chunks.
-func _pour_ore(at: Vector3) -> void:
-	var main := get_parent()
-	for kind in bucket_ore:
-		var caught := false
-		for r in receivers:
-			if is_instance_valid(r) and r.has_method("add_ore") and r.accepts_soil(at) and r.add_ore(kind):
-				caught = true
-				break
-		if not caught and main.has_method("spawn_ore"):
-			var spread := Vector3(randf_range(-0.4, 0.4), 0.0, randf_range(-0.4, 0.4)) * _k
-			main.spawn_ore(kind, Transform3D(Basis(Vector3.UP, randf() * TAU), at + spread + Vector3(0, 0.3, 0)))
-	bucket_ore.clear()
-	_show_ore()
-
-
-func _show_ore() -> void:
-	for v in _ore_views:
-		(v as Node).queue_free()
-	_ore_views.clear()
-	var centre: Vector3 = _rig.load_center
-	for k in bucket_ore.size():
-		var view := MeshInstance3D.new()
-		view.mesh = Ores._mesh(String(bucket_ore[k]))
-		view.position = centre + Vector3((k % 3 - 1) * 0.35, 0.25 + (k / 3) * 0.3, (k % 2) * 0.25 - 0.1)
-		view.scale = Vector3.ONE * 0.8
-		_bucket.add_child(view)
-		_ore_views.append(view)
-
-
 func cycle_attachment() -> String:
-	if bucket_load > 0.05 or held:
+	if bucket_load > 0.05 or held or not _magnet_held.is_empty():
 		return "Empty the bucket first"
 	var next := attachment
 	for _step in ATTACHMENTS.size():
@@ -352,8 +327,11 @@ func set_attachment(index: int) -> String:
 	attachment = index
 	var a: Dictionary = ATTACHMENTS[attachment]
 	var saw: bool = a.get("saw", false)
-	var grapple: bool = a.capacity <= 0.0 and not saw
-	var no_bucket := grapple or saw
+	var magnet: bool = a.get("magnet", false)
+	var grapple: bool = a.capacity <= 0.0 and not saw and not magnet
+	var no_bucket := grapple or saw or magnet
+	if not magnet:
+		_magnet_release()
 	_capacity = float(a.capacity) * _k * _k * _k
 	_dig_radius = DIG_RADIUS * float(a.scale) * _k
 	_bucket.scale = Vector3.ONE * float(a.scale)
@@ -364,6 +342,7 @@ func set_attachment(index: int) -> String:
 			(child as AnimatableBody3D).collision_layer = 0 if no_bucket else ARM_LAYER
 	_grapple.visible = grapple
 	_saw.visible = saw
+	_magnet.visible = magnet
 	_jaw = 0.0
 	if not no_bucket:
 		_bucket.rotation.x = clampf(_bucket.rotation.x, (_rig.bucket_limits as Vector2).x, (_rig.bucket_limits as Vector2).y)
@@ -568,11 +547,9 @@ func _operate_saw(delta: float) -> void:
 		var p := top.lerp(tip, (k + 0.5) / 8.0)
 		if p.y < _ground(p) and budget > 0.0:
 			sawing = true
-			terrain.digger = self
 			# (No deeper than the bar is long, below the natural ground.)
 			var floor_y := maxf(tip.y, terrain.original_height(p.x, p.z) - SAW_LENGTH * _k)
 			var removed := terrain.dig(Vector3(p.x, floor_y, p.z), SAW_WIDTH * 0.75 * _k, budget, true)
-			terrain.digger = null
 			budget -= removed
 			cut += removed
 	if cut > 0.0:
@@ -587,10 +564,80 @@ func _operate_saw(delta: float) -> void:
 	_saw_chain.position.y = -0.7 - SAW_LENGTH * 0.5 + fmod(_saw_spin * 0.05, SAW_LENGTH / 16.0)
 
 
+func _build_magnet() -> void:
+	_magnet = _node(_bucket, Vector3.ZERO)
+	_box(_magnet, Vector3(0.3, 0.6, 0.3), Vector3(0, -0.3, 0), DARK)  # hanger
+	var disc := MeshInstance3D.new()
+	disc.mesh = Kit.cylinder(0.85, 0.35, 20)
+	disc.position = Vector3(0, -0.8, 0)
+	disc.material_override = _material(Color(0.28, 0.28, 0.3))
+	_magnet.add_child(disc)
+	var rim := MeshInstance3D.new()
+	rim.mesh = Kit.cylinder(0.9, 0.1, 20)
+	rim.position = Vector3(0, -0.6, 0)
+	rim.material_override = _material(YELLOW)
+	_magnet.add_child(rim)
+	_magnet_glow = StandardMaterial3D.new()
+	_magnet_glow.albedo_color = Color(0.3, 0.6, 1.0)
+	_magnet_glow.emission_enabled = true
+	_magnet_glow.emission = Color(0.3, 0.6, 1.0)
+	_magnet_glow.emission_energy_multiplier = 0.0
+	var face := MeshInstance3D.new()
+	face.mesh = Kit.cylinder(0.7, 0.04, 20)
+	face.position = Vector3(0, -0.99, 0)
+	face.material_override = _magnet_glow
+	_magnet.add_child(face)
+	_magnet.visible = false
+
+
+## Triggers switch it; switched on it gathers the bars under its face and carries them.
+func _operate_magnet(delta: float) -> void:
+	var trigger := _axis("bucket_dump", "bucket_curl")
+	if trigger > 0.5:
+		magnet_on = true
+	elif trigger < -0.5:
+		magnet_on = false
+	_magnet_glow.emission_energy_multiplier = 2.5 if magnet_on else 0.0
+	if not magnet_on:
+		_magnet_release()
+		return
+	_magnet_timer -= delta
+	if _magnet_timer <= 0.0 and _magnet_held.size() < MAGNET_HOLD:
+		_magnet_timer = 0.15
+		var face := _magnet.to_global(Vector3(0, -1.0, 0))
+		for node in get_tree().get_nodes_in_group("magnetic"):
+			var b := node as RigidBody3D
+			if b == null or not b.is_inside_tree() or b.has_meta("shredding") or b.freeze or b.has_meta("strapped_to"):
+				continue
+			if b.global_position.distance_to(face) > MAGNET_REACH * _k or _magnet_held.size() >= MAGNET_HOLD:
+				continue
+			# Stuck flat to the face, side by side.
+			var n := _magnet_held.size()
+			var local := Transform3D(Basis.IDENTITY, Vector3((n % 2) * 0.75 - 0.37, -1.14 - (n / 2) * 0.25, ((n / 2) % 2) * 0.3 - 0.15))
+			_magnet_held.append([b, local, b.collision_layer])
+			b.freeze_mode = RigidBody3D.FREEZE_MODE_KINEMATIC
+			b.freeze = true
+			b.collision_layer = 0
+	for entry in _magnet_held:
+		if is_instance_valid(entry[0]):
+			(entry[0] as Node3D).global_transform = _magnet.global_transform * (entry[1] as Transform3D)
+
+
+## Lets go of everything (it drops where it hangs).
+func _magnet_release() -> void:
+	for entry in _magnet_held:
+		var b: RigidBody3D = entry[0]
+		if is_instance_valid(b):
+			b.collision_layer = int(entry[2])
+			b.freeze = false
+			b.linear_velocity = Vector3.ZERO
+	_magnet_held.clear()
+
+
 ## Multiplayer state (host -> joining players).
 func net_state() -> Array:
 	return [_joints(), bucket_load, attachment, _jaw, _track_travel, _speed, _joint_velocity, stalled, driven,
-		_dug > 0.0, _spilling, _spill_point, _visual.rotation, winch.net_state(), bucket_ore]
+		_dug > 0.0, _spilling, _spill_point, _visual.rotation, winch.net_state(), magnet_on]
 
 
 func apply_net_state(xform: Transform3D, s: Array) -> void:
@@ -613,9 +660,9 @@ func apply_net_state(xform: Transform3D, s: Array) -> void:
 	_spill_point = s[11]
 	_net_tilt = s[12]
 	winch.apply_net_state(s[13])
-	if s.size() > 14 and s[14] is Array and s[14] != bucket_ore:
-		bucket_ore = (s[14] as Array).slice(0, 6).filter(func(k): return Ores.KINDS.has(String(k)))
-		_show_ore()
+	if s.size() > 14:
+		magnet_on = bool(s[14])
+		_magnet_glow.emission_energy_multiplier = 2.5 if magnet_on else 0.0
 
 
 func _puppet_step(delta: float) -> void:
@@ -712,7 +759,9 @@ func rumble() -> Vector2:
 
 func status() -> String:
 	var text: String
-	if _saw.visible:
+	if _magnet.visible:
+		text = "MAGNET   ·   %s" % (("ON  ·  %d BARS" % _magnet_held.size()) if magnet_on else "OFF  (right trigger / U to switch on)")
+	elif _saw.visible:
 		text = "TRENCH SAW   ·   %s" % ("CUTTING" if sawing else "lower the bar into the ground and drag it")
 	elif _grapple.visible:
 		text = "GRAPPLE   ·   %s" % ("HOLDING " + String(held.get_meta("label", "load")).to_upper() if held else ("CLOSED" if _jaw > 0.8 else "OPEN"))
@@ -725,7 +774,7 @@ func status() -> String:
 
 
 func status_fill() -> float:
-	if _saw.visible:
+	if _saw.visible or _magnet.visible:
 		return 0.0
 	return _jaw if _grapple.visible else bucket_load / _capacity
 
@@ -733,7 +782,10 @@ func status_fill() -> float:
 ## What the HUD shows for this machine.
 func hud_info() -> Dictionary:
 	var info := {"speed": absf(_speed) * 3.6, "max_speed": MAX_SPEED * 3.6, "flags": [String(ATTACHMENTS[attachment].name).to_upper()]}
-	if _saw.visible:
+	if _magnet.visible:
+		info.load = float(_magnet_held.size()) / MAGNET_HOLD
+		info.load_text = ("MAGNET ON  ·  %d BARS  (left trigger / O lets go)" % _magnet_held.size()) if magnet_on else "MAGNET OFF  (right trigger / U)"
+	elif _saw.visible:
 		info.load = 0.0
 		info.load_text = "SAW  " + ("CUTTING" if sawing else "LOWER IT INTO THE GROUND")
 	elif _grapple.visible:
@@ -742,6 +794,10 @@ func hud_info() -> Dictionary:
 	else:
 		info.load = bucket_load / _capacity
 		info.load_text = "BUCKET %.2f / %.1f m³%s" % [bucket_load, _capacity, "  GRAVEL" if bucket_material == Terrain.SURFACE_GRAVEL and bucket_load > 0.05 else ""]
+		if bucket_value >= 1.0:
+			info.load_text += "  ·  ORE $%d" % roundi(bucket_value)
+		if digging_band > 0:
+			info.flags.append("DIGGING %s" % String(Ores.BANDS[digging_band][1]).to_upper())
 	if stalled:
 		info.flags.append("CUTTING")
 	if winch.is_attached():
@@ -776,8 +832,8 @@ func _operate_arm(delta: float) -> void:
 	cab.rotation.y = wrapf(cab.rotation.y + _joint_velocity.x * delta, -PI, PI)
 	_boom.rotation.x = _clamp_joint(_boom.rotation.x + _joint_velocity.y * delta, _rig.boom_limits)
 	_stick.rotation.x = _clamp_joint(_stick.rotation.x + _joint_velocity.z * delta, _rig.stick_limits)
-	if _saw.visible:
-		# The saw bar hangs plumb too.
+	if _saw.visible or _magnet.visible:
+		# The saw bar and the magnet hang plumb too.
 		var plumb := _stick.global_basis.inverse() * Vector3.UP
 		_bucket.rotation.x = atan2(plumb.z, plumb.y)
 	elif _grapple.visible:
@@ -869,19 +925,23 @@ func _penetration() -> float:
 ## whether the soil stops this frame's motion: a full bucket can't cut, and an empty
 ## one can only cut DIG_RATE per second.
 func _dig(delta: float, before: float) -> bool:
-	if _saw.visible:
-		return false  # the saw slices through; it never holds the arm up
+	if _saw.visible or _magnet.visible:
+		return false  # the saw slices through; the magnet doesn't dig
 	if not _grapple.visible and bucket_load < _capacity - 0.001:
 		var budget := minf(_capacity - bucket_load, DIG_RATE * _k * _k * _k * delta)
 		for local in _rig.carve_points + _rig.block_points:
 			var p := _bucket.to_global(local)
 			if budget > 0.0 and p.y < _ground(p):
 				var gravel := terrain.is_gravel(p.x, p.z)
-				terrain.digger = self
 				var removed := terrain.dig(p, _dig_radius, budget)
-				terrain.digger = null
 				_dug += removed
 				bucket_load += removed
+				if removed > 0.0:
+					var depth := terrain.dug_depth(p.x, p.z)
+					digging_band = Ores.band_at(depth)
+					var g := Ores.grade(Vector2(p.x, p.z), depth, terrain.is_rock(p.x, p.z))
+					bucket_value += removed * g.x
+					bucket_gold += removed * g.x * g.y
 				if gravel:
 					_gravel_in_bucket += removed
 				_set_bucket_material(Terrain.SURFACE_GRAVEL if _gravel_in_bucket > bucket_load * 0.5 else Terrain.SURFACE_SOIL)
@@ -906,14 +966,21 @@ func _spill(delta: float) -> void:
 	var amount := minf(bucket_load, DUMP_RATE * _k * _k * _k * delta)
 	var p := _bucket.to_global(_rig.load_center)
 	_spill_point = p
-	if not bucket_ore.is_empty():
-		_pour_ore(p)
+	# The ore goes with the soil, share for share.
+	var share := amount / maxf(bucket_load, 0.0001)
+	var value := bucket_value * share
+	var gold := bucket_gold * share
+	bucket_value -= value
+	bucket_gold -= gold
 	_gravel_in_bucket = maxf(_gravel_in_bucket - amount * (_gravel_in_bucket / maxf(bucket_load, 0.001)), 0.0)
 	bucket_load -= amount
 	soil_moved += amount
 	for truck in receivers:
 		if truck.accepts_soil(p):
+			var poured := amount
 			amount -= truck.add_soil(amount, bucket_material)
+			if truck.has_method("add_value") and poured > 0.0:
+				truck.add_value(value * (poured - amount) / poured, gold * (poured - amount) / poured)
 			break
 	if amount > 0.0:
 		terrain.deposit(p.x, p.z, amount, DUMP_RADIUS * _k, bucket_material)

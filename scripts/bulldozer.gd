@@ -585,9 +585,7 @@ func _doze(delta: float) -> float:
 	right.y = edge + sin(_tilt) * half_edge * size
 	var edge_mid := left.lerp(right, 0.5) + fwd * 0.3 * size
 	var cutting_gravel := terrain.is_gravel(edge_mid.x, edge_mid.z)
-	terrain.digger = self
 	var removed := terrain.cut_flat(left, right, fwd, CUT_BACK * size, CUT_FRONT * size, budget)
-	terrain.digger = null
 	if removed > blade_load * 0.5 and removed > 0.001:
 		blade_material = Terrain.SURFACE_GRAVEL if cutting_gravel else Terrain.SURFACE_SOIL
 	blade_load += removed
@@ -690,17 +688,6 @@ func _show_grinder() -> void:
 		for side in [-1.0, 1.0]:
 			Kit.box(_grinder, Vector3(0.08, 0.9, 1.0), Vector3(side * (length * 0.5 + 0.1), 0.1, 0.25), orange, 0.02)
 	_grinder.visible = grinder
-
-
-## Ore the blade cuts out rolls up in front of it, to be pushed along with the soil.
-func take_ore(kind: String) -> bool:
-	var main := get_parent()
-	if not main.has_method("spawn_ore"):
-		return false
-	var at := _blade.to_global(Vector3(randf_range(-0.8, 0.8) * size, 0.0, -0.9 * size))
-	at.y = terrain.get_height(at.x, at.z) + 0.5
-	main.spawn_ore(kind, Transform3D(Basis(Vector3.UP, randf() * TAU), at))
-	return true
 
 
 ## Height of the cutting edge above the tracks with the machine sitting level.

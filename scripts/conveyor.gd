@@ -53,6 +53,8 @@ var receivers: Array = []
 var hopper := 0.0  # m3 waiting in the hopper
 var material := 0  # Terrain.SURFACE_SOIL / SURFACE_GRAVEL (what's in the hopper)
 var delivered := 0.0  # m3 dropped off the head in total
+var hopper_value := 0.0  # $ of ore in the hopper (see ores.gd), and its gold part
+var hopper_gold := 0.0
 
 var _speed := 0.0
 var _turn := 0.0
@@ -238,8 +240,13 @@ func _run_belt(delta: float) -> void:
 	if _lump_timer <= 0.0 and hopper > 0.01 and _lumps.size() < MAX_LUMPS:
 		_lump_timer = LUMP_EVERY
 		var amount := minf(hopper, FEED_RATE * LUMP_EVERY)
+		var share := amount / maxf(hopper, 0.0001)
+		var value := hopper_value * share
+		var gold := hopper_gold * share
+		hopper_value -= value
+		hopper_gold -= gold
 		hopper -= amount
-		_lumps.append([0.0, amount, material])
+		_lumps.append([0.0, amount, material, value, gold])
 		_update_heap()
 	# Carry them up, and drop each off the head.
 	var k := 0
@@ -247,14 +254,14 @@ func _run_belt(delta: float) -> void:
 		var lump: Array = _lumps[k]
 		lump[0] = float(lump[0]) + BELT_SPEED * delta
 		if float(lump[0]) >= length:
-			_discharge(float(lump[1]), int(lump[2]))
+			_discharge(float(lump[1]), int(lump[2]), float(lump[3]) if lump.size() > 3 else 0.0, float(lump[4]) if lump.size() > 4 else 0.0)
 			_lumps.remove_at(k)
 		else:
 			k += 1
 	_show_lumps(path)
 
 
-func _discharge(amount: float, what: int) -> void:
+func _discharge(amount: float, what: int, value := 0.0, gold := 0.0) -> void:
 	var head := head_point()
 	# It falls straight down: anything below the head with an open body takes it.
 	var ground := terrain.get_height(head.x, head.z)
@@ -267,7 +274,10 @@ func _discharge(amount: float, what: int) -> void:
 				caught = true
 				break
 		if caught:
+			var poured := amount
 			amount -= r.add_soil(amount, what)
+			if r.has_method("add_value") and poured > 0.0:
+				r.add_value(value * (poured - amount) / poured, gold * (poured - amount) / poured)
 			break
 	if amount > 0.0:
 		terrain.deposit(head.x, head.z, amount, 1.7, what)
@@ -296,6 +306,11 @@ func accepts_soil(point: Vector3) -> bool:
 	var local := _visual.to_local(point) - HOPPER
 	# (Low as well as high: a tipping truck's load leaves its tailgate below the hopper rim.)
 	return absf(local.x) < HOPPER_HALF.x + 1.1 and absf(local.z) < HOPPER_HALF.y + 2.2 and local.y > -2.6 and local.y < 6.0
+
+
+func add_value(value: float, gold: float) -> void:
+	hopper_value += value
+	hopper_gold += gold
 
 
 ## Tips soil (or gravel) into the hopper; returns how much fitted.

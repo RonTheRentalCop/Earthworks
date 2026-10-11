@@ -124,6 +124,11 @@ func set_active(value: bool) -> void:
 	collision_mask = (1 | 2 | 4 | 8) if value else 0
 
 
+## Which way the worker faces (world yaw): the body turns inside the node.
+func facing_yaw() -> float:
+	return global_rotation.y + _model.rotation.y
+
+
 ## Multiplayer state: [position, facing, walking speed].
 func net_state() -> Array:
 	return [global_position, _model.rotation.y, Vector2(velocity.x, velocity.z).length()]

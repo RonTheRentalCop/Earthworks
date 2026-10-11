@@ -44,7 +44,7 @@ const KINDS := {
 	},
 	"dump_xl": {
 		# Big dump truck: the dump truck at 1.5x (model units scaled; wheels in body space).
-		"name": "Big dump truck", "paint": Color(0.97, 0.72, 0.12), "mass": 24000.0, "engine": 95000.0,
+		"name": "Big dump truck", "paint": Color(0.97, 0.72, 0.12), "mass": 34000.0, "engine": 130000.0, "launch": 1.8,
 		"top": 10.5, "loaded_top": 8.0, "reverse": 3.5, "steer": 0.45, "grip": 3.4, "mud_grip": 0.6, "bog": 0.6,
 		"radius": 0.84, "width": 0.7, "wheel_y": 1.42, "rest": 0.45, "travel": 0.4, "scale": 1.5,
 		"axles": [[-3.45, 1.6, true, false, false], [2.25, 1.6, false, true, true], [4.05, 1.6, false, true, true]],
@@ -61,14 +61,14 @@ const KINDS := {
 	"recovery_xl": {
 		# Heavy 8x8 rotator wrecker: everything 1.3x a regular recovery truck (model units
 		# below are scaled by "scale"; wheels are placed in body space).
-		"name": "Heavy recovery truck", "paint": Color(0.95, 0.72, 0.08), "mass": 24000.0, "engine": 170000.0,
+		"name": "Heavy recovery truck", "paint": Color(0.95, 0.72, 0.08), "mass": 34000.0, "engine": 230000.0, "launch": 2.0,
 		"top": 10.5, "loaded_top": 10.5, "reverse": 3.5, "steer": 0.45, "grip": 3.4, "mud_grip": 2.0, "bog": 0.1,
 		"radius": 0.72, "width": 0.6, "wheel_y": 1.25, "rest": 0.4, "scale": 1.3,
 		"axles": [[-3.2, 1.4, true, true, false], [-1.75, 1.4, true, true, false], [2.0, 1.4, false, true, true], [3.55, 1.4, false, true, true]],
 		"capacity": 0.0, "winch": [Vector3(0, 3.45, 4.2), 450000.0, 60.0], "hitch": Vector3(0, 0.85, 3.75), "com": 1.1,
 	},
 	"haul": {
-		"name": "Heavy haul tractor", "paint": Color(0.14, 0.3, 0.62), "mass": 11000.0, "engine": 40000.0,
+		"name": "Heavy haul tractor", "paint": Color(0.14, 0.3, 0.62), "mass": 14000.0, "engine": 70000.0, "launch": 2.4,
 		"top": 17.0, "loaded_top": 17.0, "reverse": 4.0, "steer": 0.5, "grip": 3.3, "mud_grip": 0.5, "bog": 0.7,
 		"radius": 0.55, "width": 0.46, "wheel_y": 0.95, "rest": 0.35,
 		"axles": [[-2.3, 1.05, true, false, false], [1.5, 1.05, false, true, true], [2.7, 1.05, false, true, true]],
@@ -78,7 +78,7 @@ const KINDS := {
 		# A big, stable logging rig: 1.4x scale, a stretched chassis on five axles with a wide
 		# stance and a low centre of gravity, and a long, wide bed of tall-staked bunks.
 		# (Model units are scaled by "scale"; wheels are placed in body space.)
-		"name": "Logging semi", "paint": Color(0.55, 0.1, 0.08), "mass": 23000.0, "engine": 220000.0,
+		"name": "Logging semi", "paint": Color(0.55, 0.1, 0.08), "mass": 30000.0, "engine": 280000.0, "launch": 2.6,
 		"top": 15.0, "loaded_top": 13.0, "reverse": 4.0, "steer": 0.42, "grip": 3.6, "mud_grip": 0.7, "bog": 0.5,
 		"radius": 0.82, "width": 0.62, "wheel_y": 1.3, "rest": 0.5, "travel": 0.5, "scale": 1.4, "roll": 0.06,
 		"axles": [[-3.22, 1.75, true, false, false], [2.1, 1.75, false, true, true], [3.78, 1.75, false, true, true],
@@ -86,7 +86,7 @@ const KINDS := {
 		# (A low bed and short stakes, so even the standard excavator can load it.)
 		"capacity": 0.0, "log_bed": true, "bed_pivot": Vector3(0, 1.25, 6.6),
 		"bed_length": 7.6, "bed_width": 2.9, "stake_height": 1.1,
-		"winch": [Vector3(0, 1.0, -3.6), 160000.0, 30.0], "hitch": Vector3(0, 0.85, 7.0), "com": 0.45,
+		"winch": [Vector3(0, 1.0, -3.6), 160000.0, 30.0], "hitch": Vector3(0, 0.85, 7.0), "com": 0.3,
 		"com_z": -3.2,  # mid-wheelbase: the long rear bogie carries its share
 	},
 	"logs": {
@@ -142,7 +142,8 @@ var recovery := false
 var winch: Winch
 var trailer: Node3D  # hitched trailer, if any
 var payload := 0.0
-var ore: Array = []  # ore kinds in the body (tipped out with the load)
+var payload_value := 0.0  # $ of ore in the load (see ores.gd), and the gold part of it
+var payload_gold := 0.0
 ## What's in the body: Terrain.SURFACE_SOIL or Terrain.SURFACE_GRAVEL.
 var material := 0
 var capacity := 0.0
@@ -258,8 +259,10 @@ func _physics_process(delta: float) -> void:
 		if speed < -0.5:
 			brake = BRAKE_FORCE
 		else:
-			# Pulls hard from a standstill, tails off towards top speed (gearing).
-			engine_force = throttle * force * clampf(1.0 - speed / top, 0.0, 1.0)
+			# Pulls hard from a standstill, tails off towards top speed (gearing). Heavy rigs
+			# get extra low-gear torque ("launch") to get a big load rolling.
+			var launch := lerpf(float(_spec.get("launch", 1.0)), 1.0, clampf(speed / 4.0, 0.0, 1.0))
+			engine_force = throttle * force * launch * clampf(1.0 - speed / top, 0.0, 1.0)
 	elif throttle < -0.05:
 		if speed > 0.5:
 			brake = BRAKE_FORCE
@@ -337,13 +340,10 @@ func accepts_soil(point: Vector3) -> bool:
 		and local.y > -0.3 and local.y < 5.0
 
 
-## Adds soil (or gravel) to the bed; returns how much fitted. Mixed loads take on
-## whichever there's more of.
-func add_ore(kind: String) -> bool:
-	if capacity <= 0.0 or ore.size() >= 24:
-		return false
-	ore.append(kind)
-	return true
+## Ore poured in with a load.
+func add_value(value: float, gold: float) -> void:
+	payload_value += value
+	payload_gold += gold
 
 
 func add_soil(amount: float, what := 0) -> float:
@@ -442,8 +442,8 @@ func hud_info() -> Dictionary:
 	if capacity > 0.0:
 		info.load = payload / capacity
 		info.load_text = "BED %.1f / %.0f m³%s" % [payload, capacity, "  GRAVEL" if material == Terrain.SURFACE_GRAVEL and payload > 0.05 else ""]
-		if not ore.is_empty():
-			info.flags.append("ORE ×%d  (tip it at the crusher)" % ore.size())
+		if payload_value >= 1.0:
+			info.flags.append("ORE $%d  (crusher or forge)" % roundi(payload_value))
 	elif _spec.has("log_bed"):
 		info.load = clampf(_bed.rotation.x / BED_MAX, 0.0, 1.0)
 		info.load_text = "BED TIP %d%%" % roundi(info.load * 100.0)
@@ -598,17 +598,21 @@ func _operate_bed(delta: float) -> void:
 		var pouring := payload > 0.0 and tilt > DUMP_START
 		if pouring:
 			var amount := minf(payload, DUMP_RATE * delta * (tilt - DUMP_START) / (BED_MAX - DUMP_START))
+			var share := amount / maxf(payload, 0.0001)
+			var value := payload_value * share
+			var gold := payload_gold * share
+			payload_value -= value
+			payload_gold -= gold
 			payload -= amount
 			_update_load()
 			var drop := _bed.to_global(Vector3(0, -0.6, 1.0))
-			var into: Node = null
 			for r in receivers:
 				if is_instance_valid(r) and r != self and r.accepts_soil(drop):
+					var poured := amount
 					amount -= r.add_soil(amount, material)
-					into = r
+					if r.has_method("add_value") and poured > 0.0:
+						r.add_value(value * (poured - amount) / poured, gold * (poured - amount) / poured)
 					break
-			if not ore.is_empty():
-				_tip_ore(drop, into)
 			if amount > 0.0:
 				terrain.deposit(drop.x, drop.z, amount, 1.4 + _bed_half.x * 0.2, material)
 			_pour.global_position = Vector3(drop.x, terrain.get_height(drop.x, drop.z), drop.z)
@@ -616,21 +620,6 @@ func _operate_bed(delta: float) -> void:
 		if absf(payload - _heap_fill) > 0.04:
 			_update_heap()
 	_update_hoist()
-
-
-## The rocks slide out with the first of the load: into whatever's under the tailgate
-## (a truck or the conveyor), or out onto the ground (or into the ore crusher).
-func _tip_ore(drop: Vector3, into: Node) -> void:
-	var main := get_parent()
-	for k in ore.size():
-		var kind := String(ore[k])
-		if into and into.has_method("add_ore") and into.add_ore(kind):
-			continue
-		if main.has_method("spawn_ore"):
-			var at := drop + global_basis.z * (0.6 + 0.5 * (k / 3)) + global_basis.x * ((k % 3) - 1) * 0.6
-			at.y = maxf(at.y, terrain.get_height(at.x, at.z) + 0.5)
-			main.spawn_ore(kind, Transform3D(Basis(Vector3.UP, randf() * TAU), at))
-	ore.clear()
 
 
 ## Where you stand to strap or release the load: the back of the bed.

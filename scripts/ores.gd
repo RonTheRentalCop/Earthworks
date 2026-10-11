@@ -1,10 +1,11 @@
 extends RefCounted
-## What's in the ground: dig below the topsoil and now and then a chunk of ore turns up
-## in the hole (iron and copper are common, silver less so, gold and emeralds rare and
-## deep). Where each lies is fixed by the map (copper and iron round the quarry, silver
-## in the hills, gold along the rivers and the big hills, emeralds in the hills and the
-## snowfield), and boulders on the surface, some flecked with ore, hint at it. Take ore to
-## the ore crusher at the quarry to sell it.
+## What's in the ground. The soil itself carries ore, in bands that get richer the deeper
+## you dig: topsoil (nothing), then iron-bearing clay, copper ore, silver ore, gold ore
+## and, deepest, rich gold ore. How rich a band is also depends on where you are (some
+## ground is twice as rich as average; rock mountains are richer still). Every load dug
+## carries its ore value with it (bucket, truck, conveyor) and is paid at the ore crusher,
+## or smelted into gold and silver bars by a portable forge. The bars (and the chunk
+## kinds below, kept for old saves) are physics bodies.
 
 const KINDS := {
 	"rock": {"name": "boulder", "value": 40, "color": Color(0.5, 0.49, 0.46), "metal": 0.0, "size": 0.75},
@@ -13,9 +14,44 @@ const KINDS := {
 	"silver": {"name": "silver ore", "value": 750, "color": Color(0.78, 0.79, 0.8), "metal": 0.85, "size": 0.36},
 	"gold": {"name": "gold ore", "value": 1900, "color": Color(0.95, 0.74, 0.22), "metal": 0.95, "size": 0.32},
 	"gem": {"name": "emerald", "value": 3400, "color": Color(0.2, 0.85, 0.45), "metal": 0.1, "size": 0.26},
+	"gold_bar": {"name": "gold bar", "value": 1500, "color": Color(1.0, 0.78, 0.22), "metal": 1.0, "size": 0.3},
+	"silver_bar": {"name": "silver bar", "value": 400, "color": Color(0.86, 0.87, 0.9), "metal": 1.0, "size": 0.3},
 }
 const DIG_PER_ROLL := 2.0  # m3 dug out of a 2 m patch per chance at a find
 const MIN_DEPTH := 0.5  # finds start below the topsoil
+## Ore bands by depth below the natural ground: [from (m), name, $ per m3, gold?, tint].
+const BANDS := [
+	[0.0, "topsoil", 0.0, false, Color(0, 0, 0, 0)],
+	[1.0, "iron-bearing clay", 6.0, false, Color(0.62, 0.3, 0.18, 0.35)],
+	[2.0, "copper ore", 18.0, false, Color(0.25, 0.62, 0.5, 0.45)],
+	[3.2, "silver ore", 45.0, false, Color(0.82, 0.84, 0.88, 0.55)],
+	[4.5, "gold ore", 110.0, true, Color(1.0, 0.8, 0.22, 0.55)],
+	[6.5, "rich gold ore", 220.0, true, Color(1.0, 0.86, 0.3, 0.8)],
+]
+const BAR_VALUE := {"gold_bar": 1500, "silver_bar": 400}
+
+
+## Which ore band is `depth` m below the natural ground.
+static func band_at(depth: float) -> int:
+	var band := 0
+	for k in BANDS.size():
+		if depth >= float(BANDS[k][0]):
+			band = k
+	return band
+
+
+## How rich the ground is here (0.5 .. 2, and half as much again in mountain rock).
+static func region(p: Vector2) -> float:
+	var n := clampf(_field("gold").get_noise_2d(p.x, p.y) * 0.5 + 0.5, 0.0, 1.0)
+	return 0.5 + 1.5 * smoothstep(0.2, 0.85, n)
+
+
+## $ of ore in a cubic metre of soil dug at `p`, `depth` m down. Gold bands count as gold
+## (bars from the forge). Returns Vector2($, gold share 0/1).
+static func grade(p: Vector2, depth: float, rock := false) -> Vector2:
+	var band: Array = BANDS[band_at(depth)]
+	var value := float(band[2]) * region(p) * (1.5 if rock else 1.0)
+	return Vector2(value, 1.0 if band[3] else 0.0)
 
 static var _noise: Dictionary = {}
 static var _meshes: Dictionary = {}
@@ -75,13 +111,26 @@ static func make_chunk(parent: Node, kind: String, xform: Transform3D) -> RigidB
 	body.collision_mask = 1 | 2 | 4 | 8 | 32 | 64 | 128
 	body.linear_damp = 0.2
 	body.angular_damp = 1.0
+	var bar := kind.ends_with("_bar")
 	var shape := CollisionShape3D.new()
-	var sphere := SphereShape3D.new()
-	sphere.radius = size
-	shape.shape = sphere
+	if bar:
+		# An ingot: flat, heavy, doesn't roll. Magnets pick it up; shredders and the
+		# crusher buy it.
+		var box := BoxShape3D.new()
+		box.size = Vector3(0.7, 0.24, 0.34)
+		shape.shape = box
+		body.mass = 250.0
+		body.angular_damp = 3.0
+		body.add_to_group("magnetic")
+		body.add_to_group("shreddable")
+		body.set_meta("bar", true)
+	else:
+		var sphere := SphereShape3D.new()
+		sphere.radius = size
+		shape.shape = sphere
 	body.add_child(shape)
 	var visual := MeshInstance3D.new()
-	visual.mesh = _mesh(kind)
+	visual.mesh = _bar_mesh(kind) if bar else _mesh(kind)
 	body.add_child(visual)
 	body.add_to_group("ore")
 	body.add_to_group("winchable")
@@ -92,6 +141,24 @@ static func make_chunk(parent: Node, kind: String, xform: Transform3D) -> RigidB
 	parent.add_child(body)
 	body.global_transform = xform
 	return body
+
+
+## A shiny ingot (a trapezoid block), stamped on top.
+static func _bar_mesh(kind: String) -> Mesh:
+	if _meshes.has(kind):
+		return _meshes[kind]
+	var mesh := PrismMesh.new()
+	mesh.size = Vector3(0.7, 0.24, 0.34)
+	mesh.left_to_right = 0.5
+	var box := BoxMesh.new()
+	box.size = Vector3(0.7, 0.24, 0.34)
+	var mat := StandardMaterial3D.new()
+	mat.albedo_color = KINDS[kind].color
+	mat.metallic = 0.9
+	mat.roughness = 0.25
+	box.material = mat
+	_meshes[kind] = box
+	return box
 
 
 ## A lumpy rock, its mineral showing in bright flecks (a gem is one big crystal).

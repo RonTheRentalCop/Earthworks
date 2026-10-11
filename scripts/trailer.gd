@@ -19,7 +19,7 @@ const SIZES := {
 	"lowboy": {"length": 9.0, "width": 3.0, "ramp": 2.6, "axles": [[-3.6, true], [2.6, false], [3.7, false]], "track": 1.15, "mass": 5500.0},
 	"logs": {"length": 9.0, "width": 3.0, "ramp": 2.6, "axles": [[-3.6, true], [2.6, false], [3.7, false]], "track": 1.15, "mass": 5500.0},
 	"flatbed": {"length": 14.0, "width": 4.2, "ramp": 3.6, "axles": [[-6.1, true], [-5.1, true], [3.9, false], [4.9, false], [5.9, false]],
-		"track": 1.7, "mass": 9500.0},
+		"track": 1.7, "mass": 13000.0},
 }
 const DECK_HEIGHT := 1.0
 const RAMP_RATE := 0.7  # rad/s

@@ -34,6 +34,9 @@ var _feeding: Array = []  # [body, start transform, time]
 var _spin := 0.3
 var _poll := 0.0
 var _sign_label: Label3D
+var _soil_pending := 0.0  # (the crusher) $ of ore in soil tipped in, paid each second
+var _soil_timer := 0.0
+var _soil_busy := 0.0
 
 
 func _ready() -> void:
@@ -83,11 +86,36 @@ func _physics_process(delta: float) -> void:
 		if t >= 1.0:
 			_finish(rb)
 			_feeding.erase(entry)
+	_soil_busy -= delta
+	busy = busy or _soil_busy > 0.0
+	_soil_timer -= delta
+	if _soil_timer <= 0.0:
+		_soil_timer = 1.0
+		if _soil_pending >= 1.0 and not remote:
+			shredded.emit(int(_soil_pending), "ore", global_position)
+			_soil_pending -= floorf(_soil_pending)
 	_spin = lerpf(_spin, 9.0 if busy else 0.6, 1.0 - exp(-2.5 * delta))
 	_drum.rotation.x += _spin * delta
 	for r in _rollers:
 		r.rotation.x -= _spin * 0.4 * delta
 	_chips.emitting = busy
+
+
+## The ore crusher also takes soil tipped into its infeed and pays for the ore in it.
+func accepts_soil(point: Vector3) -> bool:
+	if accepts != "ore":
+		return false
+	var local := to_local(point) - INFEED_CENTER
+	return absf(local.x) < INFEED_SIZE.x * 0.5 + 0.5 and absf(local.z) < INFEED_SIZE.z * 0.5 + 1.0 and local.y > -2.0 and local.y < 6.0
+
+
+func add_soil(amount: float, _what := 0) -> float:
+	_soil_busy = 1.5
+	return amount
+
+
+func add_value(value: float, _gold: float) -> void:
+	_soil_pending += value
 
 
 func take(rb: RigidBody3D) -> void:
@@ -208,7 +236,8 @@ func _build() -> void:
 		Kit.box(parts, Vector3(0.15, 3.4, 0.15), Vector3(x, 1.7, -8.6), steel, 0.03)
 	Kit.box(parts, Vector3(3.4, 1.2, 0.1), Vector3(-3.8, 3.4, -8.6), Kit.paint(Color(0.98, 0.78, 0.15)), 0.03)
 	var title := "WOOD SHREDDER" if accepts == "shreddable" else "ORE CRUSHER"
-	var offer := "$ FOR LOGS & STUMPS" if accepts == "shreddable" else "$ FOR ORE & BOULDERS"
+	var offer := "$ FOR LOGS, STUMPS & BARS" if accepts == "shreddable" else "TIP ORE-RICH SOIL
+$ FOR THE ORE IN IT"
 	_sign_label = Kit.label(self, title + "\n" + offer, Vector3(-3.8, 3.4, -8.67), 0.0024, Color(0.12, 0.1, 0.08), PI)
 	Kit.label(parts, title, Vector3(1.82, 2.4, 0.6), 0.0042, Color.WHITE, PI * 0.5)
 	Kit.label(parts, title, Vector3(-1.82, 2.4, 0.6), 0.0042, Color.WHITE, -PI * 0.5)

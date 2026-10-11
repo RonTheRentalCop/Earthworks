@@ -666,7 +666,7 @@ func _render_thumbnails() -> void:
 			"excavator_xl":
 				node = Excavator.new()
 				node.size_scale = 2.0
-			"dozer", "dozer_angle", "dozer_xl", "dozer_angle_xl", "dozer_carry", "conveyor", "roller", "roller_xl", "mobile_shredder":
+			"dozer", "dozer_angle", "dozer_xl", "dozer_angle_xl", "dozer_carry", "conveyor", "roller", "roller_xl", "mobile_shredder", "forge":
 				node = main._create_vehicle(kind)  # the same machine the game builds
 			"trailer":
 				node = Trailer.new()
@@ -699,7 +699,7 @@ func _render_thumbnails() -> void:
 		# Each family is framed from the same distance, so the big versions look big.
 		var reach: float = {"excavator": 22.0, "excavator_xl": 22.0, "trailer": 19.0, "log_trailer": 19.0, "flatbed": 24.0, "adt": 17.0, "pickup": 11.0,
 			"dozer": 26.0, "dozer_angle": 26.0, "dozer_xl": 26.0, "dozer_angle_xl": 26.0, "dozer_carry": 26.0,
-			"recovery": 19.0, "recovery_xl": 19.0, "conveyor": 34.0, "log_semi": 17.0, "roller": 14.0, "roller_xl": 20.0, "mobile_shredder": 17.0, "dump_xl": 20.0}.get(kind, 14.5)
+			"recovery": 19.0, "recovery_xl": 19.0, "conveyor": 34.0, "log_semi": 17.0, "roller": 14.0, "roller_xl": 20.0, "mobile_shredder": 17.0, "dump_xl": 20.0, "forge": 16.0}.get(kind, 14.5)
 		var look := Vector3(0, 1.6 if kind != "pickup" else 0.9, 0)
 		cam.position = look + Vector3(-0.62, 0.34, -0.7).normalized() * reach
 		if kind in ["dozer", "dozer_angle", "dozer_xl", "dozer_angle_xl", "dozer_carry", "excavator", "excavator_xl"]:

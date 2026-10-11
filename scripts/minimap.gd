@@ -130,6 +130,13 @@ func _draw() -> void:
 	draw_rect(Rect2(qa, qb - qa), Color(0.85, 0.85, 0.85, 0.9), false, 2.0)
 	if Rect2(Vector2.ZERO, size).has_point((qa + qb) * 0.5):
 		_draw_letter((qa + qb) * 0.5, "Q")
+	# The quarry tip (fill delivered for cash).
+	if main.tip:
+		var tq: Vector2 = to_map.call(main.tip.global_position)
+		if Rect2(Vector2(-8, -8), size + Vector2(16, 16)).has_point(tq):
+			draw_circle(tq, 7.0, Color(0.1, 0.1, 0.1, 0.8))
+			draw_circle(tq, 5.5, Color(0.95, 0.75, 0.2))
+			_draw_letter(tq, "T")
 	# Shredders.
 	for s in main.shredders:
 		var q: Vector2 = to_map.call(s.global_position)
@@ -163,7 +170,7 @@ func _draw() -> void:
 			var side := Vector2(-dir.y, dir.x)
 			draw_colored_polygon(PackedVector2Array([edge + dir * 10.0, edge - dir * 6.0 + side * 7.0, edge - dir * 6.0 - side * 7.0]), Color(1.0, 0.55, 0.1))
 	# The player (or the machine being driven): an arrow pointing the way it faces.
-	var yaw := player.global_rotation.y
+	var yaw: float = player.facing_yaw() if player.has_method("facing_yaw") else player.global_rotation.y
 	var heading := Vector2(-sin(yaw), -cos(yaw))
 	if player is VehicleBody3D:
 		heading = -heading

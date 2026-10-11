@@ -31,8 +31,12 @@ const Conveyor = preload("res://scripts/conveyor.gd")
 const Roller = preload("res://scripts/roller.gd")
 const Updater = preload("res://scripts/updater.gd")
 const MobileShredder = preload("res://scripts/mobile_shredder.gd")
+const Tip = preload("res://scripts/tip.gd")
+const Forge = preload("res://scripts/forge.gd")
 const Ties = preload("res://scripts/ties.gd")
 const Ores = preload("res://scripts/ores.gd")
+## The quarry tip, where soil and gravel are delivered for cash (position, yaw).
+const TIP := [Vector2(266, 310), PI]
 ## The ore crusher on the quarry floor (position, yaw).
 const CRUSHER := [Vector2(220, 346), PI * 0.5]
 const BOULDERS := 32
@@ -125,6 +129,7 @@ var machines: Array = []
 var trailers: Array = []
 var shredders: Array = []
 var updater: Node
+var tip: Node3D
 var _wood_text := ""
 var _wood_timer := 0.0
 ## The starting fleet (and the test fleet), for the automated checks.
@@ -316,6 +321,8 @@ func _ready() -> void:
 	terrain.paint_ice(Vector2(ICE_POND.x, ICE_POND.y), ICE_POND.z)
 	terrain.flatten(CRUSHER[0], Vector2(12, 12), 4.0)
 	terrain.protect(CRUSHER[0], Vector2(11, 11))
+	terrain.flatten(TIP[0], Vector2(8, 8), 4.0)
+	terrain.protect(TIP[0], Vector2(7, 7))
 	terrain.finalize()
 	terrain.area_changed.connect(_on_terrain_changed)
 	terrain.soil_removed.connect(_on_soil_removed)
@@ -348,7 +355,7 @@ func _ready() -> void:
 		_add_demolition_site(String(site.name), pos, blocks)
 	var wall_at := DEMOLITION + Vector2(-4, -30)
 	_add_demolition_site("brick wall", wall_at, Buildings.wall(debris_root, Vector3(wall_at.x, wall_level, wall_at.y), 12, 4, "brick"))
-	_scatter_boulders()
+	# (No loose boulders or ore chunks any more: ore is in the soil itself, see ores.gd.)
 	for k in debris.size():
 		_register_body(debris[k], k)
 	props = Scenery.build_zone(self, ZONE, zone_level)
@@ -372,6 +379,12 @@ func _ready() -> void:
 		s.shredded.connect(_on_shredded)
 		s.feeding.connect(func(body: RigidBody3D) -> void: net.send_shred(k, int(body.get_meta("body_id", -1))))
 		shredders.append(s)
+	# The quarry tip: soil and gravel delivered for cash.
+	tip = Tip.new()
+	tip.position = Vector3(TIP[0].x, terrain.get_height(TIP[0].x, TIP[0].y), TIP[0].y)
+	tip.rotation.y = TIP[1]
+	add_child(tip)
+	tip.paid.connect(func(value: int, label: String, _at: Vector3) -> void: career.earn(value, label.capitalize()))
 	# The ore crusher on the quarry floor (works like a shredder, but takes rock).
 	var crusher := Shredder.new()
 	crusher.accepts = "ore"
@@ -384,6 +397,7 @@ func _ready() -> void:
 	var crusher_index := shredders.size()
 	crusher.feeding.connect(func(body: RigidBody3D) -> void: net.send_shred(crusher_index, int(body.get_meta("body_id", -1))))
 	shredders.append(crusher)
+	_refresh_receivers()
 	_build_forests(rng)
 	Scenery.tree_ring(self, Terrain.HALF_SIZE + 3.0, Terrain.HALF_SIZE + 70.0, 4200)
 	_build_particle_ground()
@@ -829,6 +843,10 @@ func _create_vehicle(kind: String) -> Node3D:
 			var fb := Trailer.new()
 			fb.variant = "flatbed"
 			return fb
+		"forge":
+			var fg := Forge.new()
+			fg.terrain = terrain
+			return fg
 		"mobile_shredder":
 			var ms := MobileShredder.new()
 			ms.terrain = terrain
@@ -988,8 +1006,15 @@ func _free_bay(for_trailer: bool) -> Vector3:
 func _refresh_receivers() -> void:
 	_receivers.clear()
 	for m in machines:
-		if (m is Truck and m.capacity > 0.0) or m is Conveyor:
+		if (m is Truck and m.capacity > 0.0) or m is Conveyor or m is Forge:
 			_receivers.append(m)
+	# Fixed drop-offs: the quarry tip and the ore crusher (host only: they pay).
+	if not net.is_client():
+		if tip:
+			_receivers.append(tip)
+		for s in shredders:
+			if s.accepts == "ore":
+				_receivers.append(s)
 
 
 func _right_vehicle(node: Node3D, peer := 1) -> void:
@@ -1190,29 +1215,8 @@ func _scatter_boulders() -> void:
 
 ## Digging (host): every so much soil dug out of a patch below the topsoil is a chance of
 ## turning up a chunk of ore there.
-func _on_soil_removed(at: Vector3, volume: float, depth: float) -> void:
-	if net.is_client() or depth < Ores.MIN_DEPTH or _restoring:
-		return
-	var key := Vector2i(floori(at.x / 2.0), floori(at.z / 2.0))
-	var dug: float = float(_dig_tally.get(key, 0.0)) + volume
-	if dug < Ores.DIG_PER_ROLL:
-		_dig_tally[key] = dug
-		return
-	_dig_tally[key] = dug - Ores.DIG_PER_ROLL
-	var kind: String = Ores.roll(self, Vector2(at.x, at.z), depth, _ore_rng)
-	if kind == "":
-		return
-	# Into the bucket that dug it (or rolled up in front of the dozer blade); otherwise
-	# (a ripper, say) it's left lying in the hole.
-	var digger = terrain.digger
-	var where := "in the hole"
-	if digger and digger.has_method("take_ore") and digger.take_ore(kind):
-		where = "in the bucket" if digger is Excavator else "in front of the blade"
-	else:
-		var spot := Vector3(at.x, terrain.get_height(at.x, at.z) + 0.6, at.z)
-		spawn_ore(kind, Transform3D(Basis(Vector3.UP, _ore_rng.randf() * TAU), spot))
-	if kind in ["silver", "gold", "gem"]:
-		net.toast_all("FOUND %s %s!  ·  worth $%d at the ore crusher (quarry)" % [String(Ores.KINDS[kind].name).to_upper(), where.to_upper(), int(Ores.KINDS[kind].value)], Hud.GOOD)
+func _on_soil_removed(_at: Vector3, _volume: float, _depth: float) -> void:
+	pass  # (ore is part of the soil now: see ores.gd)
 
 
 ## Clears loose clutter off the whole map to keep the frame rate up: pulled stumps, ore
@@ -1229,7 +1233,7 @@ func clean_up_site() -> int:
 		if not is_instance_valid(b) or not b.is_inside_tree() or b.get_parent() != self:
 			continue  # (a grapple holding it reparents it)
 		var stump: bool = b.get_meta("label", "") == "stump"
-		var rock: bool = b.is_in_group("ore")
+		var rock: bool = b.is_in_group("ore") and not b.has_meta("bar")
 		if not (stump or rock) or b.has_meta("strapped_to") or b.has_meta("tie_locked"):
 			continue
 		ties.release(b)
@@ -1312,7 +1316,14 @@ func spawn_ore(kind: String, xform: Transform3D) -> RigidBody3D:
 
 
 func _on_shredded(value: int, label: String, _at: Vector3) -> void:
-	career.earn(value, ("Crushed " if label in Ores.KINDS.values().map(func(k): return k.name) else "Shredded ") + label)
+	var reason := "Shredded " + label
+	if label.ends_with("bar"):
+		reason = "Sold a " + label
+	elif label == "ore":
+		reason = "Crushed ore"
+	elif label in Ores.KINDS.values().map(func(k): return k.name):
+		reason = "Crushed " + label
+	career.earn(value, reason)
 	if label.ends_with("log"):
 		career.stats.logs = int(career.stats.logs) + 1
 		jobs.notify("logs")

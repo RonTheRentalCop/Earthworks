@@ -66,6 +66,7 @@ const SURFACE_ICE := 3  # a frozen pond: slippery, nothing sinks
 const SURFACE_ROCK := 4  # mountain rock: grey, no mud, digs at a quarter of the speed
 const ROCK_HARD := 0.25  # how much of a cut a machine gets through in rock
 const ROCK_FACE := Color(0.55, 0.53, 0.5)
+const ORE_BANDS = preload("res://scripts/ores.gd").BANDS
 
 # World features (recorded while laying out the world, replayed onto each block).
 const OP_MOUND := 0
@@ -136,9 +137,6 @@ var focus: Node3D
 var last_cut_wanted := 0.0
 ## Swamps (x, z, radius): mud there runs deeper than anywhere else (see mud_depth).
 var deep_zones: Array = []
-## The machine whose dig or cut is running right now (so ore it turns up can go into its
-## bucket); set by the machine around the call.
-var digger: Node = null
 ## Multiplayer (host): chunks changed since the last sync, and every chunk that differs
 ## from the generated world (sent to players who join later).
 var net_record := false
@@ -333,6 +331,14 @@ func paint_ice(center: Vector2, radius: float) -> void:
 func paint_rock(center: Vector2, radius: float) -> void:
 	_record({"t": OP_ROCK, "c": center, "r": radius,
 		"rect": Rect2(center - Vector2.ONE * radius, Vector2.ONE * radius * 2.0)})
+
+
+static func _band(dug: float) -> int:
+	var band := 0
+	for k in ORE_BANDS.size():
+		if dug >= float(ORE_BANDS[k][0]):
+			band = k
+	return band
 
 
 func is_rock(wx: float, wz: float) -> bool:
@@ -1347,6 +1353,12 @@ func _build_chunk(cx: int, cz: int) -> void:
 					c = SUBSOIL.lerp(CLAY, (dug - 1.0) / 1.5)
 				else:
 					c = CLAY.lerp(ROCK, clampf(dug - 2.5, 0.0, 1.0))
+				# The ore bands show in the cut (see ores.gd): rusty, green copper,
+				# grey silver, gold glints deeper down.
+				var band: Array = ORE_BANDS[_band(dug)]
+				var tint: Color = band[4]
+				if tint.a > 0.0:
+					c = c.lerp(Color(tint.r, tint.g, tint.b), tint.a)
 				c.a = 1.0
 			if m > 0.0:
 				var a := c.a

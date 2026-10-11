@@ -110,11 +110,13 @@ the session; your own career is untouched.
   the surface flows visibly downstream (white water where it's fast).
 - Felled trees shed their leaves as they fall and come down as bare, heavy logs (a big oak weighs
   tonnes), so they lie where they land instead of bouncing away.
-- **Ore in the ground**: dig below the topsoil and chunks of ore turn up in the hole now and then:
-  iron and copper (common, rich round the quarry), silver (the hills), gold (along the rivers and
-  the big hills, a metre or more down) and emeralds (rare, deep, in the hills and the snowfield).
-  Boulders lie about the map, some flecked with ore hinting at what's under them. Take ore and
-  boulders to the **ore crusher** on the quarry floor (grapple, truck or dozer) to sell them.
+- **Ore in the soil**: the soil itself carries ore, in bands that get richer the deeper you dig
+  (you can see them in the colour of the cut): topsoil (nothing), iron-bearing clay (1 m down),
+  copper ore (2 m), silver ore (3.2 m), gold ore (4.5 m) and rich gold ore (6.5 m). Some ground is
+  up to twice as rich as average, and mountain rock is richer still. Every load carries its ore
+  value (the bucket and truck HUDs show it) through buckets, trucks and the conveyor. Tip it into
+  the **ore crusher** at the quarry and you're paid the ore's value on the spot, or into a
+  **portable forge** to have it smelted into gold and silver bars worth 1.5x as much.
 - Hit a tree with a machine and it falls, leaving a stump that blocks machines until you dig around
   its roots (about 0.4 m down) to break it free, or shove on into it with a dozer or excavator and
   tear it out. Felled trees and stumps are remembered across the map.
@@ -172,12 +174,16 @@ the session; your own career is untouched.
 - **Wide flatbed trailer** ($16,000): a 14 m × 4.2 m deck on five axles with full-width ramps, for
   the big dozers and the mining excavator. Hitch it to the heavy haul tractor; raise the ramps to
   strap the load down.
-- **Ore:** ore dug up by the excavator lands in its bucket (you can see the rocks), pours into a
-  dump truck with the soil and slides out of the tailgate when you tip it; tip it into the ore
-  crusher at the quarry to sell it. Ore a dozer blade cuts out rolls ahead of the blade to be
-  pushed along.
-- **Clean up site** (pause menu): clears loose stumps, ore and boulders off the whole map to keep
-  the frame rate up. Anything strapped, tied, held or in a machine stays.
+- **Portable forge** ($45,000): tip ore-rich soil into the hopper at its back (bucket, dump truck
+  or conveyor). It smelts it and slides gold bars ($1,500) and silver bars ($400) out of the chute
+  at the front.
+- **Magnet** (excavator tool, $6,000): right trigger (U) switches it on and it picks up the bars
+  under it; left trigger (O) lets them go. Drop bars into any shredder (or the ore crusher) to sell
+  them.
+- **Quarry tip** (T on the minimap): back a truck into the bay and tip soil ($5/m³) or gravel
+  ($3/m³) for cash; any ore in it pays half what the crusher would.
+- **Clean up site** (pause menu): clears loose stumps off the whole map to keep the frame rate up
+  (bars stay). Anything strapped, tied, held or in a machine stays.
 - **Roller** ($16,000): grades ground flat to a level you set. Raise or lower the level with the
   boom keys (I / K), or press stick out (L) to set it to the ground under the drum; then press
   the tool button (N) to switch levelling on. Wherever the drum rolls (or sits), high ground is
