@@ -71,6 +71,7 @@ var quality := 1 if OS.get_name() == "macOS" else 2
 var player_name := ""
 var last_address := ""
 var last_port := 24680
+var last_code := ""
 var owned := {}  # id -> true
 var stats := {"earned": 0, "jobs": 0, "logs": 0, "stumps": 0, "soil": 0.0}
 ## False in automated tests, so they never touch the player's save.
@@ -92,6 +93,7 @@ func _load_settings() -> void:
 	player_name = String(cfg.get_value("settings", "name", player_name))
 	last_address = String(cfg.get_value("settings", "address", last_address))
 	last_port = int(cfg.get_value("settings", "port", last_port))
+	last_code = String(cfg.get_value("settings", "code", last_code))
 
 
 ## Saves just the settings (works while playing in someone else's game too).
@@ -102,6 +104,7 @@ func save_settings() -> void:
 	cfg.set_value("settings", "name", player_name)
 	cfg.set_value("settings", "address", last_address)
 	cfg.set_value("settings", "port", last_port)
+	cfg.set_value("settings", "code", last_code)
 	cfg.save(SAVE_PATH)
 
 
@@ -193,6 +196,7 @@ func save_game() -> void:
 	cfg.set_value("settings", "name", player_name)
 	cfg.set_value("settings", "address", last_address)
 	cfg.set_value("settings", "port", last_port)
+	cfg.set_value("settings", "code", last_code)
 	cfg.save(SAVE_PATH)
 
 

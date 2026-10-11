@@ -12,12 +12,15 @@ const PASSWORD := "dig-deep-42"
 const PORT := 24699
 
 var role := "host"
+var code := ""  # --code=XXXX-XXXX: play online through the brokers (WebRTC) instead of by IP
 
 
 func _initialize() -> void:
 	for arg in OS.get_cmdline_user_args():
 		if arg.begins_with("--role="):
 			role = arg.substr(7)
+		elif arg.begins_with("--code="):
+			code = arg.substr(7)
 	if role == "host":
 		await _host()
 	else:
@@ -59,7 +62,10 @@ func _host() -> void:
 				beat = Time.get_ticks_msec()
 				print("[host] settling: frame %d, %d sites" % [settle, t._slump_rects.size()])
 		print("[host] dug up the map before hosting: %d changed chunks (settled in %.0f s)" % [t.edited.size(), settle / 60.0])
-	main._on_host_requested(PORT, PASSWORD, "HostBot")
+	if code != "":
+		print("[host] online: ", main.net.host_online("HostBot", code), " code ", main.net.room_code)
+	else:
+		main._on_host_requested(PORT, PASSWORD, "HostBot")
 	print("[host] hosting: ", main.net.is_host())
 	var waited := 0
 	if "--wait" in OS.get_cmdline_user_args():
@@ -92,11 +98,13 @@ func _host() -> void:
 func _client(bad: bool) -> void:
 	Net.pending = {"mode": "join", "address": "127.0.0.1", "port": PORT,
 		"password": "wrong-pass" if bad else PASSWORD, "name": "BadBot" if bad else "Bot%d" % (randi() % 1000)}
+	if code != "":
+		Net.pending = {"mode": "join", "code": "ZZZZ-ZZZZ" if bad else code, "name": "BadBot" if bad else "Bot%d" % (randi() % 1000)}
 	var main = load("res://main.tscn").instantiate()
 	main.name = "Main"
 	root.add_child(main)
 	var waited := 0
-	while main.machines.is_empty() and waited < 60 * 20:
+	while main.machines.is_empty() and waited < 60 * 40:
 		await _frames(1)
 		waited += 1
 		if _main() != main:

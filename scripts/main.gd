@@ -440,6 +440,8 @@ func _ready() -> void:
 		get_tree().reload_current_scene())
 	menu.host_requested.connect(_on_host_requested)
 	menu.join_requested.connect(_on_join_requested)
+	menu.host_online_requested.connect(_on_host_online_requested)
+	menu.join_code_requested.connect(_on_join_code_requested)
 	menu.leave_requested.connect(func() -> void: net.leave())
 	net.players_changed.connect(_on_players_changed)
 	# From here on every change to the ground is kept for the world save; put the saved
@@ -462,8 +464,11 @@ func _ready() -> void:
 		hud.toast(String(pending.toast), Hud.BAD)
 	elif not scripted:
 		hud.toast("Welcome to the depot  ·  press %s to hire machines and take jobs" % hud.key("menu"), Hud.ACCENT)
-	if "--host" in OS.get_cmdline_user_args():
-		_on_host_requested(Net.DEFAULT_PORT, _arg_value("--password", "test1234"), _arg_value("--name", "Host"))
+	if "--host-online" in OS.get_cmdline_user_args():
+		var error := net.host_online(_arg_value("--name", "Host"), _arg_value("--code", ""))
+		print("Earthworks: hosting online, room code %s %s" % [net.room_code, error])
+	elif "--host" in OS.get_cmdline_user_args():
+		_on_host_requested(int(_arg_value("--port", str(Net.DEFAULT_PORT))), _arg_value("--password", "test1234"), _arg_value("--name", "Host"))
 
 
 func _arg_value(key: String, fallback: String) -> String:
@@ -497,6 +502,23 @@ func _on_host_requested(port: int, password: String, player_name: String) -> voi
 		career.save_game()
 
 
+## Hosts this world online: friends join with the room code (no port forwarding).
+func _on_host_online_requested(player_name: String) -> void:
+	var error := net.host_online(player_name)
+	if error != "":
+		hud.toast(error, Hud.BAD)
+	else:
+		hud.toast("Hosting online  ·  room code %s  ·  friends type it in to join (it's in the pause menu too)" % net.room_code, Hud.GOOD)
+		career.save_game()
+
+
+func _on_join_code_requested(code: String, player_name: String) -> void:
+	if net.is_online():
+		net.leave()
+	Net.pending = {"mode": "join", "code": code, "name": player_name}
+	get_tree().reload_current_scene()
+
+
 ## Joining throws away this world: reload, rebuild it in joining mode, then connect.
 func _on_join_requested(address: String, port: int, password: String, player_name: String) -> void:
 	if net.is_online():
@@ -513,12 +535,14 @@ func _start_joining(pending: Dictionary) -> void:
 	# Don't appear inside the host's worker.
 	var offset := Vector2.from_angle(randf() * TAU) * randf_range(2.5, 4.0)
 	player.global_position += Vector3(offset.x, 0.0, offset.y)
-	var error := net.join(String(pending.address), int(pending.port), String(pending.password), String(pending.name))
+	var online := pending.has("code")
+	var error: String = net.join_online(String(pending.code), String(pending.name)) if online \
+			else net.join(String(pending.address), int(pending.port), String(pending.password), String(pending.name))
 	if error != "":
 		Net.pending = {"toast": error}
 		get_tree().call_deferred("reload_current_scene")
 		return
-	hud.toast("Connecting to %s…" % pending.address, Hud.MUTED)
+	hud.toast("Looking for the game %s…" % net.room_code if online else "Connecting to %s…" % pending.address, Hud.MUTED)
 
 
 func _on_players_changed() -> void:
@@ -1289,7 +1313,8 @@ func _unbury(b: RigidBody3D) -> void:
 
 ## Keeps the world save fresh (your own game only) and writes it on the way out.
 func save_world() -> void:
-	if career.persistent and not net.is_client():
+	# (--no-save: tests that load your world but must never write it.)
+	if career.persistent and not net.is_client() and not "--no-save" in OS.get_cmdline_user_args():
 		WorldSave.save(self)
 
 

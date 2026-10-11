@@ -36,12 +36,13 @@ jobs:
           "$GODOT" --headless --export-release "macOS" build/Earthworks-macOS.zip
           ls -lh build
 
-      - name: Export Windows app (64-bit, one .exe)
+      - name: Export Windows app (64-bit: the .exe and the WebRTC .dll for online play)
         continue-on-error: true  # never hold back the Mac build
         run: |
           mkdir -p build/windows
           "$GODOT" --headless --export-release "Windows" build/windows/Earthworks.exe
-          cd build/windows && zip -q ../Earthworks-Windows.zip Earthworks.exe
+          ls build/windows
+          cd build/windows && zip -q ../Earthworks-Windows.zip Earthworks.exe *.dll
           ls -lh ..
 
       - uses: actions/upload-artifact@v4
@@ -63,7 +64,7 @@ jobs:
           body: |
             Earthworks ${{ github.ref_name }}
 
-            **Windows:** download Earthworks-Windows.zip, unzip it and run Earthworks.exe. It isn't
+            **Windows:** download Earthworks-Windows.zip, unzip it (keep the .dll next to the .exe) and run Earthworks.exe. It isn't
             signed, so Windows SmartScreen may warn the first time: click "More info" → "Run anyway".
 
             **macOS** (universal: Apple Silicon and Intel): download Earthworks-macOS.zip and unzip it.
@@ -72,4 +73,5 @@ jobs:
 
                 xattr -cr Earthworks.app
 
-            Everyone in a multiplayer game needs the same version.
+            **Multiplayer:** one player picks MULTIPLAYER → HOST ONLINE and reads out the room code; the
+            others pick JOIN WITH CODE. No port forwarding or VPN needed. Everyone needs the same version.

@@ -15,6 +15,8 @@ signal new_career
 signal quality_changed(level: int)
 signal host_requested(port: int, password: String, player_name: String)
 signal join_requested(address: String, port: int, password: String, player_name: String)
+signal host_online_requested(player_name: String)
+signal join_code_requested(code: String, player_name: String)
 signal leave_requested
 signal closed
 
@@ -23,6 +25,7 @@ const Truck = preload("res://scripts/truck.gd")
 const Excavator = preload("res://scripts/excavator.gd")
 const Bulldozer = preload("res://scripts/bulldozer.gd")
 const Trailer = preload("res://scripts/trailer.gd")
+const Lobby = preload("res://scripts/lobby.gd")
 
 const INK := Color(0.07, 0.07, 0.08, 0.96)
 const CARD := Color(0.13, 0.13, 0.15, 1.0)
@@ -63,6 +66,7 @@ var _body: VBoxContainer
 var _money: Label
 var _thumbs := {}  # kind -> ViewportTexture
 var _confirm_new := false
+var _show_ip := false  # Multiplayer screen: the by-IP options are open
 
 
 func setup(main_node: Node3D, career_node: Career) -> void:
@@ -402,6 +406,9 @@ func _fill_pause() -> void:
 	holder.add_child(box)
 	box.add_child(_label("EARTHWORKS", 40, ACCENT, true))
 	box.add_child(_label("PAUSED", 16, MUTED, true))
+	if main.net.is_host():
+		box.add_child(_rule())
+		_host_info(box)
 	box.add_child(_rule())
 	var quality_name: String = ["LOW", "MEDIUM", "HIGH"][career.quality]
 	var items := [["RESUME", close], ["DEPOT  ·  HIRE & JOBS", func() -> void: open_depot()],
@@ -458,9 +465,7 @@ func open_multiplayer() -> void:
 			box.add_child(row)
 		box.add_child(_label("%d / %d players" % [net.players.size(), net.MAX_PLAYERS], 14, MUTED))
 		if net.is_host():
-			var addresses := _addresses()
-			box.add_child(_label("Friends join with one of these addresses, port %d, and your password:" % career.last_port, 14, MUTED))
-			box.add_child(_label("   ".join(PackedStringArray(addresses)) if not addresses.is_empty() else "(no network found)", 18, GOOD, true))
+			_host_info(box)
 		var stop := _button("STOP HOSTING" if net.is_host() else "LEAVE GAME", 18)
 		stop.pressed.connect(func() -> void:
 			leave_requested.emit()
@@ -468,40 +473,76 @@ func open_multiplayer() -> void:
 		box.add_child(stop)
 	else:
 		var name_edit := _field(box, "YOUR NAME", career.player_name if career.player_name != "" else "Player", false)
-		var pass_edit := _field(box, "ROOM PASSWORD (everyone uses the same one, 4+ characters)", "", true)
-		var port_edit := _field(box, "PORT", str(career.last_port), false)
-		box.add_child(_rule())
-		var host_button := _button("HOST THIS WORLD  (up to 4 players)", 18)
-		box.add_child(host_button)
-		box.add_child(_rule())
-		var addr_edit := _field(box, "HOST'S ADDRESS (their Tailscale or LAN IP)", career.last_address, false)
-		var join_button := _button("JOIN GAME", 18)
-		box.add_child(join_button)
 		var note := _label("", 14, BAD)
-		box.add_child(note)
-		var remember := func() -> void:
+		var remember_name := func() -> void:
 			career.player_name = name_edit.text.strip_edges()
-			career.last_address = addr_edit.text.strip_edges()
-			career.last_port = clampi(port_edit.text.to_int(), 1024, 65535) if port_edit.text.is_valid_int() else 24680
 			career.save_settings()
-		host_button.pressed.connect(func() -> void:
-			if pass_edit.text.length() < 4:
-				note.text = "Pick a password of at least 4 characters."
-				return
-			remember.call()
-			host_requested.emit(career.last_port, pass_edit.text, career.player_name)
+		box.add_child(_rule())
+		var host_online := _button("HOST ONLINE  ·  get a room code for friends (up to 4 players)", 18)
+		box.add_child(host_online)
+		host_online.pressed.connect(func() -> void:
+			remember_name.call()
+			host_online_requested.emit(career.player_name)
 			close())
-		join_button.pressed.connect(func() -> void:
-			if addr_edit.text.strip_edges() == "" or pass_edit.text.length() < 4:
-				note.text = "Enter the host's address and the room password."
+		var code_edit := _field(box, "FRIEND'S ROOM CODE", career.last_code, false)
+		code_edit.placeholder_text = "e.g. KX7P-M3QD"
+		var join_code := _button("JOIN WITH CODE", 18)
+		box.add_child(join_code)
+		join_code.pressed.connect(func() -> void:
+			var code := Lobby.clean_code(code_edit.text)
+			if code == "":
+				note.text = "Room codes are 8 letters and numbers, like KX7P-M3QD."
 				return
-			remember.call()
+			remember_name.call()
+			career.last_code = code
+			career.save_settings()
 			close()
-			join_requested.emit(career.last_address, career.last_port, pass_edit.text, career.player_name))
-	var help := _label("Traffic is encrypted (DTLS) and the password is checked without ever being sent. To play " +
-			"over the internet without opening ports, install Tailscale (tailscale.com, free) on every PC, sign " +
-			"in to the same network and join with the host's 100.x.x.x address. On the same Wi-Fi, use the LAN address. " +
-			"Joining replaces your world with the host's; your own cash and unlocks stay safe.", 13, MUTED)
+			join_code_requested.emit(code, career.player_name))
+		box.add_child(note)
+		box.add_child(_rule())
+		if not _show_ip:
+			var by_ip := _button("HOST OR JOIN BY IP ADDRESS  (same Wi-Fi, port forwarding, VPN)  ▸", 15)
+			by_ip.pressed.connect(func() -> void:
+				_show_ip = true
+				open_multiplayer())
+			box.add_child(by_ip)
+		else:
+			var pass_edit := _field(box, "ROOM PASSWORD (everyone uses the same one, 4+ characters)", "", true)
+			var port_edit := _field(box, "PORT", str(career.last_port), false)
+			var addr_edit := _field(box, "HOST'S ADDRESS (to join; their LAN or public IP)", career.last_address, false)
+			var row := HBoxContainer.new()
+			row.add_theme_constant_override("separation", 10)
+			var host_button := _button("HOST BY IP", 17)
+			var join_button := _button("JOIN BY IP", 17)
+			host_button.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+			join_button.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+			row.add_child(host_button)
+			row.add_child(join_button)
+			box.add_child(row)
+			var remember := func() -> void:
+				career.player_name = name_edit.text.strip_edges()
+				career.last_address = addr_edit.text.strip_edges()
+				career.last_port = clampi(port_edit.text.to_int(), 1024, 65535) if port_edit.text.is_valid_int() else 24680
+				career.save_settings()
+			host_button.pressed.connect(func() -> void:
+				if pass_edit.text.length() < 4:
+					note.text = "Pick a password of at least 4 characters."
+					return
+				remember.call()
+				host_requested.emit(career.last_port, pass_edit.text, career.player_name)
+				close())
+			join_button.pressed.connect(func() -> void:
+				if addr_edit.text.strip_edges() == "" or pass_edit.text.length() < 4:
+					note.text = "Enter the host's address and the room password."
+					return
+				remember.call()
+				close()
+				join_requested.emit(career.last_address, career.last_port, pass_edit.text, career.player_name))
+	var help := _label("Online games need no setup: players connect straight to each other (encrypted), " +
+			"finding each other through free public matchmaking. A few strict networks (some phone hotspots and " +
+			"carrier-grade routers) block direct links; then use HOST BY IP with port %d forwarded on the host's router. " % career.last_port +
+			"Everyone needs the same version (you have %s). Joining replaces your world with the host's; your own " % main.net.game_version() +
+			"cash and unlocks stay safe.", 13, MUTED)
 	help.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	help.custom_minimum_size = Vector2(700, 0)
 	box.add_child(help)
@@ -509,6 +550,26 @@ func open_multiplayer() -> void:
 	back.pressed.connect(open_pause)
 	box.add_child(back)
 	_focus_first()
+
+
+## What friends need to join this game: the room code (online) or the addresses and port.
+func _host_info(box: Control) -> void:
+	var net = main.net
+	if net.room_code != "":
+		box.add_child(_label("ROOM CODE  (friends: MULTIPLAYER → JOIN WITH CODE)", 13, MUTED, true))
+		var row := HBoxContainer.new()
+		row.add_theme_constant_override("separation", 14)
+		row.add_child(_label(net.room_code, 30, GOOD, true))
+		var copy := _button("COPY", 15)
+		copy.pressed.connect(func() -> void:
+			DisplayServer.clipboard_set(net.room_code)
+			copy.text = "COPIED")
+		row.add_child(copy)
+		box.add_child(row)
+	else:
+		var addresses := _addresses()
+		box.add_child(_label("Friends join with one of these addresses, port %d, and your password:" % career.last_port, 14, MUTED))
+		box.add_child(_label("   ".join(PackedStringArray(addresses)) if not addresses.is_empty() else "(no network found)", 18, GOOD, true))
 
 
 func _addresses() -> Array:

@@ -56,19 +56,24 @@ cab view and climbing out.
   2.4× and giant oak about 3× an ordinary log ("prized log").
 
 ## Multiplayer (up to 4 players)
-**Esc → Multiplayer.** One player picks a room password and presses **Host this world**; the others
-enter the host's address, the same port and password, and press **Join game**. Everyone works for
-the same company: shared cash, unlocks and jobs (saved on the host's PC). Joining swaps your world
-for the host's for the session; your own career is untouched.
+**Esc → Multiplayer.** One player presses **Host online** and gets a room code like `KX7P-M3QD`
+(shown in the pause menu too, with a COPY button); the others type it under **Join with code**.
+That's it: no port forwarding, no VPN, nothing to install. Everyone works for the same company:
+shared cash, unlocks and jobs (saved on the host's PC). Joining swaps your world for the host's for
+the session; your own career is untouched.
 
-- **Same Wi-Fi / LAN:** join with the host's LAN address (shown on the host's Multiplayer screen).
-- **Over the internet:** install [Tailscale](https://tailscale.com) (free) on every PC, sign in to the
-  same tailnet, and join with the host's `100.x.x.x` address. No port forwarding, and only your own
-  devices can reach the game. (Port forwarding UDP 24680 also works, but Tailscale is safer.)
-- **Security:** Godot's built-in ENet networking with DTLS encryption (a fresh key every time you
-  host); the password is checked by HMAC challenge-response in both directions, so it never crosses
-  the network and a fake host can't impersonate yours; players can't message each other directly;
-  everything players send is type-checked and rate-limited; the host decides everything.
+- **How it connects:** players find each other through free public MQTT brokers (EMQX, shiftr.io,
+  Mosquitto; several at once, so one being down doesn't matter), then connect straight to each other
+  over WebRTC (the bundled `addons/webrtc_native` plugin), using Google's and Cloudflare's free STUN
+  servers to get through home routers. There's no game server to run.
+- **If it can't connect:** a few strict networks (some phone hotspots and carrier-grade NAT) block
+  direct links. Then use **Host or join by IP address**: the host forwards UDP 24680 on their router
+  (or everyone uses the same Wi-Fi), and friends join with the host's address and a password.
+- **Security:** traffic is encrypted either way (WebRTC's DTLS, or ENet with DTLS and a fresh key
+  every time you host). The room code (or password) is checked by HMAC challenge-response in both
+  directions, so it never crosses the network and a fake host can't impersonate yours; only a hash
+  of the code is posted to the brokers. Players can't message each other directly; everything they
+  send is type-checked and rate-limited; the host decides everything.
 - The host runs the simulation; other players' machines, logs and rubble follow it (20 updates a
   second), and your controls are sent to the host for the machine you're in. Each player's water
   is simulated on their own PC.

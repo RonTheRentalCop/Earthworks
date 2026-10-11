@@ -1,13 +1,17 @@
 extends Node
 ## Multiplayer for up to 4 players, host-authoritative.
 ##
-## Security: Godot's built-in ENet transport with DTLS encryption (a fresh certificate is
-## generated every time you host) and a room password checked by HMAC challenge-response
-## in both directions, so the password itself never crosses the network and a fake host
-## can't pass itself off as yours. Clients can't message each other (no relay), and
-## everything they send is type-checked and rate-limited. For play over the internet, run
-## Tailscale (or another WireGuard VPN) on each PC and join using the host's Tailscale
-## address — no port forwarding, and only your own devices can reach the game.
+## Two ways to connect:
+##  - Online (the default): the host gets a room code; friends type it in. Players find each
+##    other through public message brokers (see lobby.gd) and connect straight to each
+##    other over WebRTC, which gets through home routers with no port forwarding (STUN).
+##    The room code doubles as the password.
+##  - By IP: Godot's ENet transport on a port (LAN, port forwarding or a VPN).
+## Security: both are encrypted (WebRTC's DTLS / ENet with DTLS and a fresh certificate per
+## session), and the password is checked by HMAC challenge-response in both directions, so
+## it never crosses the network and a fake host can't pass itself off as yours. Clients
+## can't message each other (no relay), and everything they send is type-checked and
+## rate-limited.
 ##
 ## The host runs the whole simulation. Joining players build the same world from the
 ## same seed, then receive a snapshot (changed terrain, machines, trees, logs, rubble,
@@ -17,7 +21,7 @@ extends Node
 signal status_changed(text: String)
 signal players_changed
 
-const VERSION := "earthworks-net-6"  # bump whenever the messages change: mismatched games refuse politely
+const VERSION := "earthworks-net-7"  # bump whenever the messages change: mismatched games refuse politely
 const DEFAULT_PORT := 24680
 const MAX_PLAYERS := 4
 const STATE_INTERVAL := 0.05  # 20 updates a second
@@ -30,6 +34,15 @@ const INPUT_ACTIONS := ["drive_forward", "drive_back", "turn_left", "turn_right"
 	"boom_up", "boom_down", "stick_out", "stick_in", "bucket_curl", "bucket_dump", "handbrake"]
 const REQUESTS := ["enter", "exit", "utility", "ramps", "reset", "buy", "deliver", "take_job", "abandon_job", "return", "supply", "tie", "cut_tie"]
 const Player = preload("res://scripts/player.gd")
+const Lobby = preload("res://scripts/lobby.gd")
+## Free public STUN servers: they tell each player its public address, for the direct link.
+const ICE := {"iceServers": [{"urls": ["stun:stun.l.google.com:19302", "stun:stun1.l.google.com:19302", "stun:stun.cloudflare.com:3478"]}]}
+## WebRTC channels matching the @rpc channel numbers 1, 2 and 3 (ENet makes them itself).
+const RTC_CHANNELS := [MultiplayerPeer.TRANSFER_MODE_UNRELIABLE_ORDERED, MultiplayerPeer.TRANSFER_MODE_UNRELIABLE_ORDERED, MultiplayerPeer.TRANSFER_MODE_RELIABLE]
+const OFFER_RESEND_MSEC := 4000
+const FIND_TIMEOUT_MSEC := 25000
+const CONNECT_TIMEOUT_MSEC := 25000
+const SNAPSHOT_PIECE := 12000
 const COLORS: Array[Color] = [Color(1.0, 0.76, 0.1), Color(0.35, 0.75, 1.0), Color(0.55, 0.95, 0.45), Color(1.0, 0.45, 0.6)]
 
 ## Set before reloading the scene to join a game (survives the reload).
@@ -63,6 +76,12 @@ const GROUND_BYTES_PER_BATCH := 12000
 const GROUND_BATCHES_IN_FLIGHT := 2
 var _ground_unacked := {}  # peer -> batches sent but not yet confirmed
 var _remote_inputs := {}  # peer -> {axes, winch}
+var room_code := ""  # online games: what friends type to join
+var _lobby: Node
+var _rtc := {}  # peer -> connection being set up: {conn, cands, type, sdp, ready_at, sent, born, answered}
+var _rtc_id := 0  # joining player: our peer id (we pick it)
+var _join_started := 0
+var _snapshot_parts := []
 
 
 func _ready() -> void:
@@ -78,6 +97,8 @@ func _ready() -> void:
 
 
 func _exit_tree() -> void:
+	if _lobby:
+		_lobby.stop()
 	var sm := _scene_multiplayer()
 	sm.auth_callback = Callable()
 	if role != "solo":
@@ -125,6 +146,27 @@ func host(port: int, password: String, player_name: String) -> String:
 		return "Couldn't start encryption"
 	# Pace big sends (the join snapshot) so a player's machine can keep up.
 	peer.host.bandwidth_limit(0, 400000)
+	_begin_hosting(peer, password, player_name)
+	status_changed.emit("Hosting on port %d" % port)
+	return ""
+
+
+## Hosts online: makes a room code and waits on the brokers for players. Returns "" or an
+## error message. (`code` is only given by tests.)
+func host_online(player_name: String, code := "") -> String:
+	if role != "solo":
+		return "Already in a session"
+	var peer := WebRTCMultiplayerPeer.new()
+	if peer.create_server(RTC_CHANNELS) != OK:
+		return "Couldn't start online hosting"
+	room_code = code if code != "" else Lobby.new_code()
+	_begin_hosting(peer, room_code, player_name)
+	_start_lobby([Lobby.room_topic(room_code) + "/host"])
+	status_changed.emit("Hosting online, room code %s" % room_code)
+	return ""
+
+
+func _begin_hosting(peer: MultiplayerPeer, password: String, player_name: String) -> void:
 	_password = password
 	my_name = _clean_name(player_name)
 	_setup_auth()
@@ -132,9 +174,7 @@ func host(port: int, password: String, player_name: String) -> String:
 	role = "host"
 	players = {1: {"name": my_name, "color": 0, "driving": -1}}
 	main.terrain.net_record = true
-	status_changed.emit("Hosting on port %d" % port)
 	players_changed.emit()
-	return ""
 
 
 ## Connects to a host (called on the freshly built world after the scene reload).
@@ -154,6 +194,158 @@ func join(address: String, port: int, password: String, player_name: String) -> 
 	return ""
 
 
+## Joins an online game by its room code (on the freshly built world, like join()).
+func join_online(code: String, player_name: String) -> String:
+	code = Lobby.clean_code(code)
+	if code == "":
+		return "Room codes look like KX7P-M3QD"
+	var peer := WebRTCMultiplayerPeer.new()
+	_rtc_id = randi_range(2, 2147483646)
+	if peer.create_client(_rtc_id, RTC_CHANNELS) != OK:
+		return "Couldn't start online play"
+	room_code = code
+	_password = code
+	my_name = _clean_name(player_name)
+	_setup_auth()
+	multiplayer.multiplayer_peer = peer
+	role = "client"
+	var entry := _new_connection(1)
+	peer.add_peer(entry.conn, 1)  # (before the offer, so the data channels are part of it)
+	(entry.conn as WebRTCPeerConnection).create_offer()
+	_join_started = Time.get_ticks_msec()
+	_start_lobby([Lobby.room_topic(code) + "/p/" + str(_rtc_id)])
+	status_changed.emit("Looking for the game %s…" % code)
+	return ""
+
+
+func game_version() -> String:
+	return String(ProjectSettings.get_setting("application/config/version", "?"))
+
+
+func _start_lobby(topics: Array) -> void:
+	if _lobby == null:
+		_lobby = Lobby.new()
+		add_child(_lobby)
+		_lobby.message.connect(_on_lobby_message)
+	_lobby.start(topics)
+
+
+func _new_connection(peer_id: int) -> Dictionary:
+	var conn := WebRTCPeerConnection.new()
+	conn.initialize(ICE)
+	var entry := {"conn": conn, "cands": [], "type": "", "sdp": "", "ready_at": 0, "sent": 0, "born": Time.get_ticks_msec(), "answered": 0}
+	conn.session_description_created.connect(func(type: String, sdp: String) -> void:
+		conn.set_local_description(type, sdp)
+		entry.type = type
+		entry.sdp = sdp
+		entry.ready_at = Time.get_ticks_msec())
+	conn.ice_candidate_created.connect(func(mid: String, index: int, cand: String) -> void:
+		entry.cands.append([mid, index, cand]))
+	_rtc[peer_id] = entry
+	return entry
+
+
+## Our half of the handshake is ready to post once the addresses are gathered (STUN
+## answers in well under a second; don't wait forever for a slow one).
+func _gathered(entry: Dictionary) -> bool:
+	if entry.sdp == "":
+		return false
+	var conn: WebRTCPeerConnection = entry.conn
+	return conn.get_gathering_state() == WebRTCPeerConnection.GATHERING_STATE_COMPLETE or Time.get_ticks_msec() - int(entry.ready_at) > 2500
+
+
+func _add_candidates(conn: WebRTCPeerConnection, list) -> void:
+	if not list is Array:
+		return
+	for c in list.slice(0, 30):
+		if c is Array and c.size() == 3:
+			conn.add_ice_candidate(String(c[0]), int(c[1]), String(c[2]))
+
+
+func _on_lobby_message(d: Dictionary) -> void:
+	var kind := String(d.get("t", ""))
+	if role == "host" and kind == "offer":
+		_on_offer(d)
+	elif role == "client" and _rtc.has(1):
+		var entry: Dictionary = _rtc[1]
+		if kind == "answer" and int(entry.answered) == 0:
+			entry.answered = Time.get_ticks_msec()
+			var conn: WebRTCPeerConnection = entry.conn
+			conn.set_remote_description("answer", String(d.get("sdp", "")))
+			_add_candidates(conn, d.get("cands"))
+			status_changed.emit("Found the game, connecting…")
+		elif kind == "error":
+			_fail(String(d.get("msg", "The host turned us away")))
+
+
+## Host: a player wants in. Set up a connection for them and answer.
+func _on_offer(d: Dictionary) -> void:
+	var from := int(d.get("from", 0))
+	if from < 2 or from > 2147483646 or players.has(from):
+		return
+	var reply := Lobby.room_topic(room_code) + "/p/" + str(from)
+	if _rtc.has(from):
+		var old: Dictionary = _rtc[from]
+		if int(old.sent) > 0:
+			_post_answer(from, old)  # they didn't get our answer: say it again
+		return
+	if String(d.get("v", "")) != VERSION:
+		_lobby.publish(reply, {"t": "error", "msg": "The host has Earthworks %s and you have %s. Everyone needs the same version." % [game_version(), String(d.get("game", "an older one"))]})
+		return
+	if players.size() + _rtc.size() >= MAX_PLAYERS:
+		_lobby.publish(reply, {"t": "error", "msg": "That game is full (%d players)" % MAX_PLAYERS})
+		return
+	var entry := _new_connection(from)
+	(multiplayer.multiplayer_peer as WebRTCMultiplayerPeer).add_peer(entry.conn, from)
+	var conn: WebRTCPeerConnection = entry.conn
+	conn.set_remote_description("offer", String(d.get("sdp", "")))  # (makes our answer)
+	_add_candidates(conn, d.get("cands"))
+
+
+func _post_answer(peer_id: int, entry: Dictionary) -> void:
+	entry.sent = Time.get_ticks_msec()
+	_lobby.publish(Lobby.room_topic(room_code) + "/p/" + str(peer_id), {"t": "answer", "sdp": entry.sdp, "cands": entry.cands})
+
+
+## Moves connections along: posts offers and answers, gives up on ones that never connect.
+func _rtc_tick() -> void:
+	if _rtc.is_empty():
+		return
+	var now := Time.get_ticks_msec()
+	for peer_id in _rtc.keys():
+		var entry: Dictionary = _rtc[peer_id]
+		var conn: WebRTCPeerConnection = entry.conn
+		var state := conn.get_connection_state()
+		if state == WebRTCPeerConnection.STATE_CONNECTED:
+			_rtc.erase(peer_id)  # the multiplayer peer has it from here
+			if role == "client":
+				_lobby.stop()
+			continue
+		if role == "host":
+			if int(entry.sent) == 0 and _gathered(entry):
+				_post_answer(peer_id, entry)
+			elif now - int(entry.born) > CONNECT_TIMEOUT_MSEC + 10000 or state == WebRTCPeerConnection.STATE_FAILED:
+				_rtc.erase(peer_id)
+				var rtc := multiplayer.multiplayer_peer as WebRTCMultiplayerPeer
+				if rtc.has_peer(peer_id):
+					rtc.remove_peer(peer_id)
+			continue
+		# Joining player.
+		if int(entry.answered) == 0:
+			if _gathered(entry) and _lobby.brokers_up() > 0 and now - int(entry.sent) > OFFER_RESEND_MSEC:
+				entry.sent = now
+				_lobby.publish(Lobby.room_topic(room_code) + "/host", {"t": "offer", "from": _rtc_id, "v": VERSION,
+					"game": game_version(), "sdp": entry.sdp, "cands": entry.cands})
+			if now - _join_started > FIND_TIMEOUT_MSEC:
+				if _lobby.brokers_up() == 0:
+					_fail("Couldn't reach the matchmaking servers. Check your internet connection.")
+				else:
+					_fail("No game found with code %s. Check the code, and that the host is still hosting." % room_code)
+		elif state == WebRTCPeerConnection.STATE_FAILED or now - int(entry.answered) > CONNECT_TIMEOUT_MSEC:
+			_fail("Found the game but couldn't connect directly (a strict router or phone hotspot is blocking it). " +
+				"Try another network, or have the host use HOST BY IP with port forwarding.")
+
+
 ## Ends the session: the host stops hosting (its world carries on solo); a joining
 ## player goes back to their own solo world.
 func leave() -> void:
@@ -168,6 +360,10 @@ func leave() -> void:
 		multiplayer.multiplayer_peer = OfflineMultiplayerPeer.new()
 		role = "solo"
 		players = {}
+		room_code = ""
+		_rtc.clear()
+		if _lobby:
+			_lobby.stop()
 		for p in _puppets.values():
 			p.queue_free()
 		_puppets.clear()
@@ -324,6 +520,7 @@ func _on_server_disconnected() -> void:
 # --- Per frame ----------------------------------------------------------------------------
 
 func _physics_process(delta: float) -> void:
+	_rtc_tick()
 	if role == "host":
 		_host_tick(delta)
 	elif role == "client" and multiplayer.get_unique_id() != 1:
@@ -594,7 +791,10 @@ func _send_snapshot(peer: int) -> void:
 	var raw := var_to_bytes(snapshot)
 	var packed := raw.compress(FileAccess.COMPRESSION_ZSTD)
 	print_verbose("snapshot for %d: %d bytes (%d raw)" % [peer, packed.size(), raw.size()])
-	rpc_id(peer, "_rx_snapshot", packed, raw.size())
+	# In pieces: WebRTC caps the size of one message.
+	var count := ceili(packed.size() / float(SNAPSHOT_PIECE))
+	for k in count:
+		rpc_id(peer, "_rx_snapshot", k, count, packed.slice(k * SNAPSHOT_PIECE, (k + 1) * SNAPSHOT_PIECE), raw.size())
 	# Everything in the snapshot counts as sent.
 	for id in main.bodies:
 		var b = main.bodies[id]
@@ -689,9 +889,16 @@ func _from_host() -> bool:
 
 
 @rpc("authority", "call_remote", "reliable")
-func _rx_snapshot(data: PackedByteArray, size: int) -> void:
-	if not _from_host():
+func _rx_snapshot(index: int, count: int, piece: PackedByteArray, size: int) -> void:
+	if not _from_host() or count < 1 or count > 2000 or index != _snapshot_parts.size():
 		return
+	_snapshot_parts.append(piece)
+	if _snapshot_parts.size() < count:
+		return
+	var data := PackedByteArray()
+	for part in _snapshot_parts:
+		data.append_array(part)
+	_snapshot_parts.clear()
 	var snap: Dictionary = bytes_to_var(data.decompress(size, FileAccess.COMPRESSION_ZSTD))
 	main.apply_snapshot(snap)
 	rpc_id(1, "_tx_loaded")
