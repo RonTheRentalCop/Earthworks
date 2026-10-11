@@ -120,6 +120,12 @@ var _joint_velocity := Vector2.ZERO  # lift, pitch
 var _visual: Node3D
 var _arms: Node3D
 var _blade: Node3D
+## Grinder (mulcher) drum on the front of the blade: switched on, it grinds up standing
+## trees, stumps, logs and loose stumps it reaches, paid for on the spot.
+var grinder := false
+var _grinder: Node3D
+var _grind_timer := 0.0
+var _grind_spin := 0.0
 var _berm: Node3D
 var _blade_shape: CollisionShape3D
 var _cylinders: Array = []  # [rod node, base node, blade-local target]
@@ -198,6 +204,13 @@ func _physics_process(delta: float) -> void:
 	_update_linkage()
 	_rip(delta)
 	var cut_share := _doze(delta)
+	if grinder:
+		_grind_timer -= delta
+		if _grind_timer <= 0.0:
+			_grind_timer = 0.2
+			var main := get_parent()
+			if main.has_method("grind_at"):
+				main.grind_at(grinder_point(), grinder_reach(), self)
 	if cut_share < 1.0:
 		# The blade couldn't cut everything in its path: hold the dozer back so it never
 		# rides over soil it hasn't cut. Heavy cuts therefore push slowly.
@@ -305,7 +318,7 @@ func status_fill() -> float:
 ## Multiplayer state (host -> joining players).
 func net_state() -> Array:
 	return [Vector4(_arms.rotation.x, _blade.rotation.x, _angle if blade_type == "angle" else _tilt, _ripper.rotation.x), _visual.rotation, blade_load,
-		_track_travel, _speed, _joint_velocity, bogged, spilling, _cut_rate, driven, ripping, winch.net_state()]
+		_track_travel, _speed, _joint_velocity, bogged, spilling, _cut_rate, driven, ripping, winch.net_state(), grinder]
 
 
 func apply_net_state(xform: Transform3D, s: Array) -> void:
@@ -325,6 +338,9 @@ func apply_net_state(xform: Transform3D, s: Array) -> void:
 	driven = s[9]
 	ripping = s[10]
 	winch.apply_net_state(s[11])
+	if s.size() > 12 and bool(s[12]) != grinder:
+		grinder = bool(s[12])
+		_show_grinder()
 
 
 func _puppet_step(delta: float) -> void:
@@ -352,6 +368,8 @@ func _puppet_step(delta: float) -> void:
 func hud_info() -> Dictionary:
 	var info := {"speed": absf(_speed) * 3.6, "max_speed": MAX_SPEED * 3.6, "flags": ["U-BLADE" if blade_type == "straight" else "ANGLE %+d°" % roundi(rad_to_deg(_angle))],
 		"load": blade_load / capacity, "load_text": "BLADE %.1f / %.1f m³" % [blade_load, capacity]}
+	if grinder:
+		info.flags.append("GRINDER ON")
 	if bogged:
 		info.flags.append("BOGGED")
 	if bog > 0.15:
@@ -559,7 +577,9 @@ func _doze(delta: float) -> float:
 	right.y = edge + sin(_tilt) * half_edge * size
 	var edge_mid := left.lerp(right, 0.5) + fwd * 0.3 * size
 	var cutting_gravel := terrain.is_gravel(edge_mid.x, edge_mid.z)
+	terrain.digger = self
 	var removed := terrain.cut_flat(left, right, fwd, CUT_BACK * size, CUT_FRONT * size, budget)
+	terrain.digger = null
 	if removed > blade_load * 0.5 and removed > 0.001:
 		blade_material = Terrain.SURFACE_GRAVEL if cutting_gravel else Terrain.SURFACE_SOIL
 	blade_load += removed
@@ -623,6 +643,58 @@ func _rip(delta: float) -> void:
 				terrain.deposit(heap.x, heap.z, cut * 0.5, 0.28 * size)
 
 
+func toggle_grinder() -> String:
+	grinder = not grinder
+	_show_grinder()
+	return "Grinder ON  ·  drive into trees, stumps and logs to grind them for cash" if grinder else "Grinder OFF"
+
+
+## The middle of the grinder drum (world space) and how far round it it grinds.
+func grinder_point() -> Vector3:
+	return _blade.to_global(Vector3(0, -0.15, -0.95))
+
+
+func grinder_reach() -> float:
+	return _blade_width * 0.5 * size * 0.9 + 0.4
+
+
+func _show_grinder() -> void:
+	if _grinder == null:
+		var dark := Kit.paint(Color(0.14, 0.14, 0.15), 0.6, 0.3)
+		var steel := Kit.metal(Color(0.6, 0.6, 0.62))
+		var orange := Kit.paint(Color(0.95, 0.5, 0.08))
+		_grinder = Node3D.new()
+		_grinder.position = Vector3(0, -0.15, -0.95)
+		_blade.add_child(_grinder)
+		var length := _blade_width * 0.92
+		var drum := Node3D.new()
+		drum.name = "Drum"
+		_grinder.add_child(drum)
+		Kit.axle(drum, 0.42, length, Vector3.ZERO, dark, 18)
+		for k in 10:
+			var a := TAU * k / 10.0
+			for j in int(length / 0.45):
+				var x := -length * 0.5 + 0.22 + j * 0.45 + (0.2 if k % 2 == 0 else 0.0)
+				if absf(x) < length * 0.5 - 0.1:
+					Kit.box(drum, Vector3(0.08, 0.16, 0.08), Vector3(x, cos(a), sin(a)) * 0.5 + Vector3(x, 0, 0) * 0.0, steel, 0.0)
+		# Hood over the top and side plates bolted to the blade.
+		Kit.box(_grinder, Vector3(length + 0.2, 0.08, 0.9), Vector3(0, 0.55, 0.15), orange, 0.03)
+		for side in [-1.0, 1.0]:
+			Kit.box(_grinder, Vector3(0.08, 0.9, 1.0), Vector3(side * (length * 0.5 + 0.1), 0.1, 0.25), orange, 0.02)
+	_grinder.visible = grinder
+
+
+## Ore the blade cuts out rolls up in front of it, to be pushed along with the soil.
+func take_ore(kind: String) -> bool:
+	var main := get_parent()
+	if not main.has_method("spawn_ore"):
+		return false
+	var at := _blade.to_global(Vector3(randf_range(-0.8, 0.8) * size, 0.0, -0.9 * size))
+	at.y = terrain.get_height(at.x, at.z) + 0.5
+	main.spawn_ore(kind, Transform3D(Basis(Vector3.UP, randf() * TAU), at))
+	return true
+
+
 ## Height of the cutting edge above the tracks with the machine sitting level.
 func _edge_offset() -> float:
 	var arms := Transform3D(Basis(Vector3.RIGHT, _arms.rotation.x), _arms.position)
@@ -631,6 +703,9 @@ func _edge_offset() -> float:
 
 
 func _update_linkage() -> void:
+	if grinder and _grinder:
+		_grind_spin += 0.35
+		(_grinder.get_node("Drum") as Node3D).rotation.x = -_grind_spin
 	_blade_shape.transform = global_transform.affine_inverse() * _blade.global_transform
 	for c in _cylinders:
 		var rod: Node3D = c[0]

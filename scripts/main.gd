@@ -28,6 +28,8 @@ const Net = preload("res://scripts/net.gd")
 const Winch = preload("res://scripts/winch.gd")
 const Forests = preload("res://scripts/forests.gd")
 const Conveyor = preload("res://scripts/conveyor.gd")
+const Roller = preload("res://scripts/roller.gd")
+const MobileShredder = preload("res://scripts/mobile_shredder.gd")
 const Ties = preload("res://scripts/ties.gd")
 const Ores = preload("res://scripts/ores.gd")
 ## The ore crusher on the quarry floor (position, yaw).
@@ -434,6 +436,7 @@ func _ready() -> void:
 	ties = Ties.new()
 	ties.main = self
 	add_child(ties)
+	menu.clean_up.connect(clean_up_site)
 	menu.new_career.connect(func() -> void:
 		career.new_game()
 		WorldSave.erase()
@@ -792,6 +795,19 @@ func _create_vehicle(kind: String) -> Node3D:
 			var lt := Trailer.new()
 			lt.variant = "logs"
 			return lt
+		"flatbed":
+			var fb := Trailer.new()
+			fb.variant = "flatbed"
+			return fb
+		"mobile_shredder":
+			var ms := MobileShredder.new()
+			ms.terrain = terrain
+			ms.shredded.connect(_on_shredded)
+			return ms
+		"roller":
+			var ro := Roller.new()
+			ro.terrain = terrain
+			return ro
 		"conveyor":
 			var c := Conveyor.new()
 			c.terrain = terrain
@@ -809,7 +825,7 @@ func _create_vehicle(kind: String) -> Node3D:
 func spawn_vehicle(kind: String) -> Node3D:
 	if fleet_size() >= Career.MAX_FLEET:
 		return null
-	var is_trailer := kind == "trailer" or kind == "log_trailer"
+	var is_trailer := kind == "trailer" or kind == "log_trailer" or kind == "flatbed"
 	var bay := _free_bay(is_trailer)
 	if bay.x == INF:
 		return null
@@ -1153,10 +1169,104 @@ func _on_soil_removed(at: Vector3, volume: float, depth: float) -> void:
 	var kind: String = Ores.roll(self, Vector2(at.x, at.z), depth, _ore_rng)
 	if kind == "":
 		return
-	var spot := Vector3(at.x, terrain.get_height(at.x, at.z) + 0.6, at.z)
-	spawn_ore(kind, Transform3D(Basis(Vector3.UP, _ore_rng.randf() * TAU), spot))
+	# Into the bucket that dug it (or rolled up in front of the dozer blade); otherwise
+	# (a ripper, say) it's left lying in the hole.
+	var digger = terrain.digger
+	var where := "in the hole"
+	if digger and digger.has_method("take_ore") and digger.take_ore(kind):
+		where = "in the bucket" if digger is Excavator else "in front of the blade"
+	else:
+		var spot := Vector3(at.x, terrain.get_height(at.x, at.z) + 0.6, at.z)
+		spawn_ore(kind, Transform3D(Basis(Vector3.UP, _ore_rng.randf() * TAU), spot))
 	if kind in ["silver", "gold", "gem"]:
-		net.toast_all("FOUND %s!  ·  worth $%d at the ore crusher (quarry)" % [String(Ores.KINDS[kind].name).to_upper(), int(Ores.KINDS[kind].value)], Hud.GOOD)
+		net.toast_all("FOUND %s %s!  ·  worth $%d at the ore crusher (quarry)" % [String(Ores.KINDS[kind].name).to_upper(), where.to_upper(), int(Ores.KINDS[kind].value)], Hud.GOOD)
+
+
+## Clears loose clutter off the whole map to keep the frame rate up: pulled stumps, ore
+## chunks and boulders lying about. Anything strapped, tied, in a grapple or riding in a
+## machine stays. (Host or solo; joining players are told what went.) Returns how many.
+func clean_up_site() -> int:
+	if net.is_client():
+		return 0
+	var gone := []
+	var stumps := 0
+	var rocks := 0
+	for id in bodies.keys():
+		var b = bodies[id]
+		if not is_instance_valid(b) or not b.is_inside_tree() or b.get_parent() != self:
+			continue  # (a grapple holding it reparents it)
+		var stump: bool = b.get_meta("label", "") == "stump"
+		var rock: bool = b.is_in_group("ore")
+		if not (stump or rock) or b.has_meta("strapped_to") or b.has_meta("tie_locked"):
+			continue
+		ties.release(b)
+		gone.append(int(id))
+		if stump:
+			stumps += 1
+		else:
+			rocks += 1
+		b.queue_free()
+	net.send_removed(gone)
+	net.toast_all("SITE CLEANED UP  ·  removed %d stumps and %d rocks" % [stumps, rocks], Hud.GOOD)
+	return gone.size()
+
+
+## A dozer's grinder: everything wooden within `reach` of `at` is ground up and paid for
+## at once: standing trees (log and stump), stumps left after felling, and loose logs and
+## stumps (not strapped, tied or held). Host only.
+func grind_at(at: Vector3, reach: float, by: Node3D) -> void:
+	if net.is_client():
+		return
+	var p := Vector2(at.x, at.z)
+	var value := 0
+	var count := 0
+	var gone := []
+	for c in forests._cells_around(p, reach):
+		for tid in forests.cells[c]:
+			if forests.state[tid] >= 2:
+				continue
+			var tp: Vector3 = forests.pos[tid]
+			if Vector2(tp.x, tp.z).distance_to(p) > reach or absf(tp.y - at.y) > 3.0:
+				continue
+			# Fell it and pull the stump through the normal events (so joining players and
+			# the world save agree), then grind the pieces.
+			var wood := []
+			if forests.state[tid] == 0:
+				wood.append(forests.apply_event(tid, "fell", self))
+			wood.append(forests.apply_event(tid, "pulled", self))
+			for b in wood:
+				if is_instance_valid(b):
+					value += int(b.get_meta("value", 150))
+					if b.has_meta("body_id"):
+						gone.append(int(b.get_meta("body_id")))
+					b.queue_free()
+			count += 1
+	for id in bodies.keys():
+		var b = bodies[id]
+		if not is_instance_valid(b) or not b.is_in_group("shreddable") or b.get_parent() != self or b.is_queued_for_deletion():
+			continue
+		if b.has_meta("strapped_to") or b.has_meta("tie_locked") or b.has_meta("shredding"):
+			continue
+		var q: Vector3 = b.global_position
+		if Vector2(q.x, q.z).distance_to(p) > reach + 0.8 or absf(q.y - at.y) > 2.5:
+			continue
+		ties.release(b)
+		value += int(b.get_meta("value", 150))
+		gone.append(int(id))
+		b.queue_free()
+		count += 1
+	if count == 0:
+		return
+	net.send_removed(gone)
+	career.earn(value, "Ground up %d %s" % [count, "piece of wood" if count == 1 else "pieces of wood"])
+
+
+## Joining player: the host cleared these away.
+func net_remove_bodies(ids: Array) -> void:
+	for id in ids:
+		var b = bodies.get(int(id))
+		if is_instance_valid(b):
+			b.queue_free()
 
 
 func spawn_ore(kind: String, xform: Transform3D) -> RigidBody3D:
@@ -1459,6 +1569,10 @@ func _press_utility() -> void:
 func _use_utility(machine: Node3D, peer: int) -> void:
 	if machine is Excavator:
 		net.toast(peer, "Attachment: " + machine.cycle_attachment())
+	elif machine is Roller:
+		net.toast(peer, machine.toggle_levelling())
+	elif machine is Bulldozer:
+		net.toast(peer, machine.toggle_grinder())
 	elif machine is Truck:
 		var t: Truck = machine
 		# The end of the train: the truck itself, or the last trailer behind it.
@@ -1562,6 +1676,10 @@ func _utility_label(machine: Node3D) -> String:
 		return "Swap tool"
 	if machine is Truck:
 		return "Hitch"
+	if machine is Roller:
+		return "Levelling on/off"
+	if machine is Bulldozer:
+		return "Grinder on/off"
 	return ""
 
 

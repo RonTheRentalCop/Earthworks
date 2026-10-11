@@ -129,6 +129,9 @@ var protected := PackedByteArray()  # 1 = can't be dug below its original level 
 var focus: Node3D
 ## The volume the last cut_flat() wanted to remove (for the dozer's hold-back).
 var last_cut_wanted := 0.0
+## The machine whose dig or cut is running right now (so ore it turns up can go into its
+## bucket); set by the machine around the call.
+var digger: Node = null
 ## Multiplayer (host): chunks changed since the last sync, and every chunk that differs
 ## from the generated world (sent to players who join later).
 var net_record := false
@@ -1012,6 +1015,43 @@ func dig_in(center: Vector3, forward: Vector3, half_length: float, half_width: f
 	_mark_dirty(r)
 	_push_aside(center, forward, half_width, removed * CELL_AREA)
 	return removed * CELL_AREA
+
+
+## A roller grading to a level: within the strip (centred on `center`, `half_length` along
+## `forward`, `half_width` across) the ground moves towards `level` by at most `step`,
+## cut down where it's high and filled where it's low, and is rolled firm. Never cuts
+## below protected ground. Returns Vector2(m3 cut, m3 filled).
+func level_strip(center: Vector3, forward: Vector3, half_length: float, half_width: float, level: float, step: float) -> Vector2:
+	var fwd := Vector2(forward.x, forward.z).normalized()
+	var side := Vector2(-fwd.y, fwd.x)
+	var c := Vector2(center.x, center.z)
+	var r := _world_rect(c, Vector2.ONE * (half_length + half_width))
+	_ensure(r)
+	var cut := 0.0
+	var fill := 0.0
+	for z in range(r.position.y, r.end.y):
+		for x in range(r.position.x, r.end.x):
+			var w := grid_to_world(x, z) - c
+			if absf(w.dot(fwd)) > half_length or absf(w.dot(side)) > half_width:
+				continue
+			var i := z * VERTS + x
+			var target := maxf(level, _floor(i))
+			var change := clampf(target - heights[i], -step, step)
+			if absf(change) < 0.0005:
+				pressed[i] = 1
+				continue
+			heights[i] += change
+			if change < 0.0:
+				cut -= change
+			else:
+				fill += change
+			disturbed[i] = 1
+			pressed[i] = 1
+			mud[i] *= 0.6
+	if cut + fill <= 0.0:
+		return Vector2.ZERO
+	_on_edited(r)
+	return Vector2(cut, fill) * CELL_AREA
 
 
 func _push_aside(center: Vector3, forward: Vector3, half_width: float, volume: float) -> void:

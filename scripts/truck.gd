@@ -71,20 +71,21 @@ const KINDS := {
 		# (Model units are scaled by "scale"; wheels are placed in body space.)
 		"name": "Logging semi", "paint": Color(0.55, 0.1, 0.08), "mass": 23000.0, "engine": 78000.0,
 		"top": 15.0, "loaded_top": 13.0, "reverse": 4.0, "steer": 0.42, "grip": 3.6, "mud_grip": 0.7, "bog": 0.5,
-		"radius": 0.64, "width": 0.52, "wheel_y": 1.3, "rest": 0.5, "travel": 0.5, "scale": 1.4, "roll": 0.06,
+		"radius": 0.82, "width": 0.62, "wheel_y": 1.3, "rest": 0.5, "travel": 0.5, "scale": 1.4, "roll": 0.06,
 		"axles": [[-3.22, 1.75, true, false, false], [2.1, 1.75, false, true, true], [3.78, 1.75, false, true, true],
 			[7.0, 1.75, false, false, true], [8.68, 1.75, false, false, true]],
-		"capacity": 0.0, "log_bed": true, "bed_pivot": Vector3(0, 1.45, 6.6),
-		"bed_length": 7.6, "bed_width": 2.9, "stake_height": 2.3,
-		"winch": [Vector3(0, 1.0, -3.6), 160000.0, 30.0], "hitch": Vector3(0, 0.85, 7.0), "com": 0.75,
+		# (A low bed and short stakes, so even the standard excavator can load it.)
+		"capacity": 0.0, "log_bed": true, "bed_pivot": Vector3(0, 1.25, 6.6),
+		"bed_length": 7.6, "bed_width": 2.9, "stake_height": 1.1,
+		"winch": [Vector3(0, 1.0, -3.6), 160000.0, 30.0], "hitch": Vector3(0, 0.85, 7.0), "com": 0.45,
 		"com_z": -3.2,  # mid-wheelbase: the long rear bogie carries its share
 	},
 	"logs": {
 		"name": "Log truck", "paint": Color(0.18, 0.45, 0.27), "mass": 10000.0, "engine": 26000.0,
 		"top": 13.0, "loaded_top": 13.0, "reverse": 3.5, "steer": 0.5, "grip": 3.0, "mud_grip": 0.6, "bog": 0.7,
-		"radius": 0.55, "width": 0.46, "wheel_y": 0.95, "rest": 0.35,
+		"radius": 0.7, "width": 0.54, "wheel_y": 0.95, "rest": 0.35,
 		"axles": [[-2.3, 1.05, true, false, false], [1.5, 1.05, false, true, true], [2.7, 1.05, false, true, true]],
-		"capacity": 0.0, "log_bed": true, "bed_pivot": Vector3(0, 1.45, 3.0),
+		"capacity": 0.0, "log_bed": true, "bed_pivot": Vector3(0, 1.45, 3.0), "stake_height": 1.1,
 		"winch": [Vector3(0, 1.0, -3.6), 110000.0, 25.0], "hitch": Vector3(0, 0.85, 3.75), "com": 0.9,
 	},
 	"adt": {
@@ -132,6 +133,7 @@ var recovery := false
 var winch: Winch
 var trailer: Node3D  # hitched trailer, if any
 var payload := 0.0
+var ore: Array = []  # ore kinds in the body (tipped out with the load)
 ## What's in the body: Terrain.SURFACE_SOIL or Terrain.SURFACE_GRAVEL.
 var material := 0
 var capacity := 0.0
@@ -328,6 +330,13 @@ func accepts_soil(point: Vector3) -> bool:
 
 ## Adds soil (or gravel) to the bed; returns how much fitted. Mixed loads take on
 ## whichever there's more of.
+func add_ore(kind: String) -> bool:
+	if capacity <= 0.0 or ore.size() >= 24:
+		return false
+	ore.append(kind)
+	return true
+
+
 func add_soil(amount: float, what := 0) -> float:
 	var taken := minf(amount, capacity - payload)
 	if taken > 0.0 and what != material and taken > payload:
@@ -424,6 +433,8 @@ func hud_info() -> Dictionary:
 	if capacity > 0.0:
 		info.load = payload / capacity
 		info.load_text = "BED %.1f / %.0f m³%s" % [payload, capacity, "  GRAVEL" if material == Terrain.SURFACE_GRAVEL and payload > 0.05 else ""]
+		if not ore.is_empty():
+			info.flags.append("ORE ×%d  (tip it at the crusher)" % ore.size())
 	elif _spec.has("log_bed"):
 		info.load = clampf(_bed.rotation.x / BED_MAX, 0.0, 1.0)
 		info.load_text = "BED TIP %d%%" % roundi(info.load * 100.0)
@@ -581,10 +592,14 @@ func _operate_bed(delta: float) -> void:
 			payload -= amount
 			_update_load()
 			var drop := _bed.to_global(Vector3(0, -0.6, 1.0))
+			var into: Node = null
 			for r in receivers:
 				if is_instance_valid(r) and r != self and r.accepts_soil(drop):
 					amount -= r.add_soil(amount, material)
+					into = r
 					break
+			if not ore.is_empty():
+				_tip_ore(drop, into)
 			if amount > 0.0:
 				terrain.deposit(drop.x, drop.z, amount, 1.4 + _bed_half.x * 0.2, material)
 			_pour.global_position = Vector3(drop.x, terrain.get_height(drop.x, drop.z), drop.z)
@@ -592,6 +607,21 @@ func _operate_bed(delta: float) -> void:
 		if absf(payload - _heap_fill) > 0.04:
 			_update_heap()
 	_update_hoist()
+
+
+## The rocks slide out with the first of the load: into whatever's under the tailgate
+## (a truck or the conveyor), or out onto the ground (or into the ore crusher).
+func _tip_ore(drop: Vector3, into: Node) -> void:
+	var main := get_parent()
+	for k in ore.size():
+		var kind := String(ore[k])
+		if into and into.has_method("add_ore") and into.add_ore(kind):
+			continue
+		if main.has_method("spawn_ore"):
+			var at := drop + global_basis.z * (0.6 + 0.5 * (k / 3)) + global_basis.x * ((k % 3) - 1) * 0.6
+			at.y = maxf(at.y, terrain.get_height(at.x, at.z) + 0.5)
+			main.spawn_ore(kind, Transform3D(Basis(Vector3.UP, randf() * TAU), at))
+	ore.clear()
 
 
 ## Where you stand to strap or release the load: the back of the bed.

@@ -12,6 +12,7 @@ signal abandon_job
 signal return_vehicle(node: Node3D)
 signal right_vehicle(node: Node3D)
 signal new_career
+signal clean_up
 signal quality_changed(level: int)
 signal host_requested(port: int, password: String, player_name: String)
 signal join_requested(address: String, port: int, password: String, player_name: String)
@@ -415,6 +416,9 @@ func _fill_pause() -> void:
 			["MULTIPLAYER" + ("  ·  %d PLAYERS" % main.net.players.size() if main.net.is_online() else ""), open_multiplayer],
 			["CONTROLS", open_controls], ["GRAPHICS:  " + quality_name, _cycle_quality]]
 	if not main.net.is_client():
+		items.append(["CLEAN UP SITE  ·  clear loose stumps & rocks", func() -> void:
+			clean_up.emit()
+			close()])
 		items.append(["NEW CAREER", _ask_new])
 	items.append(["QUIT TO DESKTOP", _quit])
 	for item in items:
@@ -657,13 +661,16 @@ func _render_thumbnails() -> void:
 			"excavator_xl":
 				node = Excavator.new()
 				node.size_scale = 2.0
-			"dozer", "dozer_angle", "dozer_xl", "dozer_angle_xl", "dozer_carry", "conveyor":
+			"dozer", "dozer_angle", "dozer_xl", "dozer_angle_xl", "dozer_carry", "conveyor", "roller", "mobile_shredder":
 				node = main._create_vehicle(kind)  # the same machine the game builds
 			"trailer":
 				node = Trailer.new()
 			"log_trailer":
 				node = Trailer.new()
 				node.variant = "logs"
+			"flatbed":
+				node = Trailer.new()
+				node.variant = "flatbed"
 			_:
 				node = Truck.new()
 				node.kind = kind
@@ -685,9 +692,9 @@ func _render_thumbnails() -> void:
 		cam.fov = 30.0
 		vp.add_child(cam)
 		# Each family is framed from the same distance, so the big versions look big.
-		var reach: float = {"excavator": 22.0, "excavator_xl": 22.0, "trailer": 19.0, "log_trailer": 19.0, "adt": 17.0, "pickup": 11.0,
+		var reach: float = {"excavator": 22.0, "excavator_xl": 22.0, "trailer": 19.0, "log_trailer": 19.0, "flatbed": 24.0, "adt": 17.0, "pickup": 11.0,
 			"dozer": 26.0, "dozer_angle": 26.0, "dozer_xl": 26.0, "dozer_angle_xl": 26.0, "dozer_carry": 26.0,
-			"recovery": 19.0, "recovery_xl": 19.0, "conveyor": 34.0, "log_semi": 17.0}.get(kind, 14.5)
+			"recovery": 19.0, "recovery_xl": 19.0, "conveyor": 34.0, "log_semi": 17.0, "roller": 14.0, "mobile_shredder": 17.0}.get(kind, 14.5)
 		var look := Vector3(0, 1.6 if kind != "pickup" else 0.9, 0)
 		cam.position = look + Vector3(-0.62, 0.34, -0.7).normalized() * reach
 		if kind in ["dozer", "dozer_angle", "dozer_xl", "dozer_angle_xl", "dozer_carry", "excavator", "excavator_xl"]:

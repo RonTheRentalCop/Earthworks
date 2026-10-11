@@ -142,6 +142,26 @@ the session; your own career is untouched.
   **Heavy recovery truck** (8x8 rotator wrecker, 450 kN winch, 60 m cable),
   **Site pickup** (fast 4x4). All have real wheel physics, a load that raises mass and centre of
   gravity, a handbrake, and mud that sinks the wheels.
+- **Portable shredder** ($22,000): a tracked shredder you drive to where the trees are coming down.
+  Drop, drag or push logs and stumps into the striped infeed at its back; they're shredded and
+  paid for on the spot.
+- **Dozer grinder:** in any bulldozer press the tool button (N) to swing a grinder drum onto the
+  front of the blade. Drive into standing trees, stumps, logs and loose stumps and they're ground
+  up and paid for instantly. Raise the blade a little to drive freely.
+- **Wide flatbed trailer** ($16,000): a 14 m × 4.2 m deck on five axles with full-width ramps, for
+  the big dozers and the mining excavator. Hitch it to the heavy haul tractor; raise the ramps to
+  strap the load down.
+- **Ore:** ore dug up by the excavator lands in its bucket (you can see the rocks), pours into a
+  dump truck with the soil and slides out of the tailgate when you tip it; tip it into the ore
+  crusher at the quarry to sell it. Ore a dozer blade cuts out rolls ahead of the blade to be
+  pushed along.
+- **Clean up site** (pause menu): clears loose stumps, ore and boulders off the whole map to keep
+  the frame rate up. Anything strapped, tied, held or in a machine stays.
+- **Roller** ($16,000): grades ground flat to a level you set. Raise or lower the level with the
+  boom keys (I / K), or press stick out (L) to set it to the ground under the drum; then press
+  the tool button (N) to switch levelling on. Wherever the drum rolls (or sits), high ground is
+  cut and low ground filled to that level, and rolled firm so nothing ruts it. The HUD shows the
+  level and how far the ground under the drum is above or below it.
 - **Tracked conveyor**: tip soil or gravel into its hopper (excavator bucket or a dump truck backed
   up to it) and the belt carries it up and drops it off the head as a growing pile, or into a truck
   parked under the head. Drive it on its tracks, raise/lower the boom (boom controls) and fold/unfold

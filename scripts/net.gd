@@ -21,7 +21,7 @@ extends Node
 signal status_changed(text: String)
 signal players_changed
 
-const VERSION := "earthworks-net-7"  # bump whenever the messages change: mismatched games refuse politely
+const VERSION := "earthworks-net-8"  # bump whenever the messages change: mismatched games refuse politely
 const DEFAULT_PORT := 24680
 const MAX_PLAYERS := 4
 const STATE_INTERVAL := 0.05  # 20 updates a second
@@ -695,6 +695,11 @@ func send_ore(id: int, kind: String, xform: Transform3D) -> void:
 		rpc("_rx_ore", id, kind, xform)
 
 
+func send_removed(ids: Array) -> void:
+	if role == "host" and not ids.is_empty():
+		rpc("_rx_removed", PackedInt32Array(ids))
+
+
 func send_ties(list: Array) -> void:
 	if role == "host" and players.size() > 1:
 		rpc("_rx_ties", list)
@@ -790,7 +795,7 @@ func _send_snapshot(peer: int) -> void:
 	}
 	var raw := var_to_bytes(snapshot)
 	var packed := raw.compress(FileAccess.COMPRESSION_ZSTD)
-	print_verbose("snapshot for %d: %d bytes (%d raw)" % [peer, packed.size(), raw.size()])
+	print("Earthworks: world snapshot for player %d: %d bytes (%d raw)" % [peer, packed.size(), raw.size()])
 	# In pieces: WebRTC caps the size of one message.
 	var count := ceili(packed.size() / float(SNAPSHOT_PIECE))
 	for k in count:
@@ -1025,6 +1030,14 @@ func _rx_career(money: int, owned: Array, change: int, reason: String) -> void:
 func _rx_jobs(state: Array) -> void:
 	if _from_host():
 		main.jobs.apply_net_state(state)
+
+
+@rpc("authority", "call_remote", "reliable")
+func _rx_removed(ids: PackedInt32Array) -> void:
+	if _from_host():
+		for id in ids:
+			_body_targets.erase(id)
+		main.net_remove_bodies(Array(ids))
 
 
 @rpc("authority", "call_remote", "reliable")

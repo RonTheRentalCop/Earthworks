@@ -12,6 +12,7 @@ const Water = preload("res://scripts/water.gd")
 const Kit = preload("res://scripts/model_kit.gd")
 const Winch = preload("res://scripts/winch.gd")
 const MachineFx = preload("res://scripts/machine_fx.gd")
+const Ores = preload("res://scripts/ores.gd")
 
 ## Swappable tools on the end of the stick. Buckets scale the real bucket; the grapple
 ## replaces it with a pair of jaws (curl closes, dump opens) that hang plumb.
@@ -97,6 +98,8 @@ var receivers: Array = []
 var bucket_load := 0.0
 ## What's in the bucket (Terrain.SURFACE_SOIL / SURFACE_GRAVEL), by majority.
 var bucket_material := 0
+var bucket_ore: Array = []  # ore kinds dug up with the soil, riding in the bucket
+var _ore_views: Array = []
 var _gravel_in_bucket := 0.0
 var soil_moved := 0.0
 var stalled := false  # soil is currently stopping the bucket
@@ -279,6 +282,46 @@ func _rut() -> void:
 
 
 ## Swaps to the next attachment (only with an empty bucket / open grapple).
+## Ore turned up by the bucket goes in with the soil (not with the grapple on).
+func take_ore(kind: String) -> bool:
+	if _grapple.visible or bucket_ore.size() >= 6:
+		return false
+	bucket_ore.append(kind)
+	_show_ore()
+	return true
+
+
+## The rocks tumble out first when the bucket tips: into a truck under it, or onto the
+## ground (or the ore crusher) as loose chunks.
+func _pour_ore(at: Vector3) -> void:
+	var main := get_parent()
+	for kind in bucket_ore:
+		var caught := false
+		for r in receivers:
+			if is_instance_valid(r) and r.has_method("add_ore") and r.accepts_soil(at) and r.add_ore(kind):
+				caught = true
+				break
+		if not caught and main.has_method("spawn_ore"):
+			var spread := Vector3(randf_range(-0.4, 0.4), 0.0, randf_range(-0.4, 0.4)) * _k
+			main.spawn_ore(kind, Transform3D(Basis(Vector3.UP, randf() * TAU), at + spread + Vector3(0, 0.3, 0)))
+	bucket_ore.clear()
+	_show_ore()
+
+
+func _show_ore() -> void:
+	for v in _ore_views:
+		(v as Node).queue_free()
+	_ore_views.clear()
+	var centre: Vector3 = _rig.load_center
+	for k in bucket_ore.size():
+		var view := MeshInstance3D.new()
+		view.mesh = Ores._mesh(String(bucket_ore[k]))
+		view.position = centre + Vector3((k % 3 - 1) * 0.35, 0.25 + (k / 3) * 0.3, (k % 2) * 0.25 - 0.1)
+		view.scale = Vector3.ONE * 0.8
+		_bucket.add_child(view)
+		_ore_views.append(view)
+
+
 func cycle_attachment() -> String:
 	if bucket_load > 0.05 or held:
 		return "Empty the bucket first"
@@ -484,7 +527,7 @@ func _build_grapple() -> void:
 ## Multiplayer state (host -> joining players).
 func net_state() -> Array:
 	return [_joints(), bucket_load, attachment, _jaw, _track_travel, _speed, _joint_velocity, stalled, driven,
-		_dug > 0.0, _spilling, _spill_point, _visual.rotation, winch.net_state()]
+		_dug > 0.0, _spilling, _spill_point, _visual.rotation, winch.net_state(), bucket_ore]
 
 
 func apply_net_state(xform: Transform3D, s: Array) -> void:
@@ -507,6 +550,9 @@ func apply_net_state(xform: Transform3D, s: Array) -> void:
 	_spill_point = s[11]
 	_net_tilt = s[12]
 	winch.apply_net_state(s[13])
+	if s.size() > 14 and s[14] is Array and s[14] != bucket_ore:
+		bucket_ore = (s[14] as Array).slice(0, 6).filter(func(k): return Ores.KINDS.has(String(k)))
+		_show_ore()
 
 
 func _puppet_step(delta: float) -> void:
@@ -750,7 +796,9 @@ func _dig(delta: float, before: float) -> bool:
 			var p := _bucket.to_global(local)
 			if budget > 0.0 and p.y < _ground(p):
 				var gravel := terrain.is_gravel(p.x, p.z)
+				terrain.digger = self
 				var removed := terrain.dig(p, _dig_radius, budget)
+				terrain.digger = null
 				_dug += removed
 				bucket_load += removed
 				if gravel:
@@ -777,6 +825,8 @@ func _spill(delta: float) -> void:
 	var amount := minf(bucket_load, DUMP_RATE * _k * _k * _k * delta)
 	var p := _bucket.to_global(_rig.load_center)
 	_spill_point = p
+	if not bucket_ore.is_empty():
+		_pour_ore(p)
 	_gravel_in_bucket = maxf(_gravel_in_bucket - amount * (_gravel_in_bucket / maxf(bucket_load, 0.001)), 0.0)
 	bucket_load -= amount
 	soil_moved += amount

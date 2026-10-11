@@ -12,11 +12,16 @@ const Kit = preload("res://scripts/model_kit.gd")
 
 const TRAILER_LAYER := 128
 const TRAILER_MASK := 1 | 4 | 32 | 64 | 128
+## Per variant: deck length and width, ramp length, axles ([model z, steers]), wheel
+## track (half), mass. The wide flatbed is long and broad enough for the big dozers and
+## excavators, with a full-width ramp.
+const SIZES := {
+	"lowboy": {"length": 9.0, "width": 3.0, "ramp": 2.6, "axles": [[-3.6, true], [2.6, false], [3.7, false]], "track": 1.15, "mass": 5500.0},
+	"logs": {"length": 9.0, "width": 3.0, "ramp": 2.6, "axles": [[-3.6, true], [2.6, false], [3.7, false]], "track": 1.15, "mass": 5500.0},
+	"flatbed": {"length": 14.0, "width": 4.2, "ramp": 3.6, "axles": [[-6.1, true], [-5.1, true], [3.9, false], [4.9, false], [5.9, false]],
+		"track": 1.7, "mass": 9500.0},
+}
 const DECK_HEIGHT := 1.0
-const DECK_LENGTH := 9.0
-const DECK_WIDTH := 3.0
-const HITCH := Vector3(0, 0.85, -6.4)  # drawbar eye, model space (front)
-const RAMP_LENGTH := 2.6
 const RAMP_RATE := 0.7  # rad/s
 const RAMP_UP := -1.42  # ramp angle when raised (standing up behind the deck)
 
@@ -29,6 +34,11 @@ var machine_name := "Lowboy trailer"
 ## "lowboy" (flat deck, loading ramps) or "logs" (log bunks with tall stakes; the
 ## button at the back straps the load down instead of working ramps). Set before adding.
 var variant := "lowboy"
+var _len := 9.0
+var _wid := 3.0
+var _ramp_len := 2.6
+var _hitch := Vector3(0, 0.85, -6.4)  # drawbar eye, model space (front)
+var _size: Dictionary = SIZES.lowboy
 ## The trailer hitched behind this one (trailers chain into a road train).
 var rear: Node3D
 ## True builds only the model (shop thumbnails).
@@ -56,7 +66,12 @@ var _straps_on := false
 
 
 func _ready() -> void:
-	mass = 5500.0
+	_size = SIZES.get(variant, SIZES.lowboy)
+	_len = _size.length
+	_wid = _size.width
+	_ramp_len = _size.ramp
+	_hitch = Vector3(0, 0.85, -_len * 0.5 - 1.9)
+	mass = _size.mass
 	collision_layer = TRAILER_LAYER
 	collision_mask = TRAILER_MASK
 	center_of_mass_mode = RigidBody3D.CENTER_OF_MASS_MODE_CUSTOM
@@ -66,12 +81,16 @@ func _ready() -> void:
 	set_meta("label", "log trailer" if variant == "logs" else "trailer")
 	if variant == "logs":
 		machine_name = "Log trailer"
+	elif variant == "flatbed":
+		machine_name = "Wide flatbed trailer"
 	_model = Node3D.new()
 	_model.rotation.y = PI
 	add_child(_model)
 	_build()
-	for w in [[-1.15, -3.6, true], [1.15, -3.6, true], [-1.15, 2.6, false], [1.15, 2.6, false], [-1.15, 3.7, false], [1.15, 3.7, false]]:
-		_add_wheel(Vector3(w[0], 0.85, -(w[1] as float)), w[2], w[0] > 0.0)
+	var track: float = _size.track
+	for a in _size.axles:
+		for x in [-track, track]:
+			_add_wheel(Vector3(x, 0.85, -float(a[0])), a[1], x > 0.0)
 	Kit.merge_tree(_model)
 	if preview:
 		freeze = true
@@ -94,7 +113,7 @@ func _physics_process(delta: float) -> void:
 	if variant != "logs":
 		var target := _ramp_down_angle if ramps_down else RAMP_UP
 		_ramp.rotation.x = move_toward(_ramp.rotation.x, target, RAMP_RATE * delta)
-		_ramp_shape.transform = _model.transform * _ramp.transform * Transform3D(Basis.IDENTITY, Vector3(0, 0.0, RAMP_LENGTH * 0.5))
+		_ramp_shape.transform = _model.transform * _ramp.transform * Transform3D(Basis.IDENTITY, Vector3(0, 0.0, _ramp_len * 0.5))
 	if not ramps_down and not _straps_on:
 		_strap_load()  # as the ramps start up
 	elif ramps_down and _straps_on:
@@ -131,7 +150,7 @@ func _puppet_step(delta: float) -> void:
 	var t := 1.0 - exp(-14.0 * delta)
 	global_transform = global_transform.interpolate_with(_net_xform, t)
 	_ramp.rotation.x = lerpf(_ramp.rotation.x, _net_ramp, t)
-	_ramp_shape.transform = _model.transform * _ramp.transform * Transform3D(Basis.IDENTITY, Vector3(0, 0.0, RAMP_LENGTH * 0.5))
+	_ramp_shape.transform = _model.transform * _ramp.transform * Transform3D(Basis.IDENTITY, Vector3(0, 0.0, _ramp_len * 0.5))
 	_wheel_spin += _net_speed / 0.42 * delta
 	for k in _wheels.size():
 		_wheels[k].position = _wheel_rest[k]
@@ -140,7 +159,7 @@ func _puppet_step(delta: float) -> void:
 
 ## Drawbar eye in world space.
 func hitch_point() -> Vector3:
-	return _model.to_global(HITCH)
+	return _model.to_global(_hitch)
 
 
 ## Where you stand to work the ramps.
@@ -165,7 +184,7 @@ func _strap_load() -> void:
 		if n is RigidBody3D and (n as RigidBody3D).freeze:
 			continue  # held by a grapple, already carried, or a joining player's copy
 		var local := _model.to_local(n.global_position)
-		if absf(local.x) > DECK_WIDTH * 0.5 + 0.4 or absf(local.z - 0.5) > DECK_LENGTH * 0.5 + 0.3:
+		if absf(local.x) > _wid * 0.5 + 0.4 or absf(local.z - 0.5) > _len * 0.5 + 0.3:
 			continue
 		if local.y < DECK_HEIGHT - 0.8 or local.y > DECK_HEIGHT + 5.0:
 			continue
@@ -265,7 +284,7 @@ func tow_point(_from: Vector3) -> Vector3:
 func hitch(truck: RigidBody3D, truck_point: Vector3) -> void:
 	# Tip the trailer about its rear axle so the drawbar eye comes to the hitch's height
 	# (the rear wheels stay on the ground), slide it onto the hitch, then pin them together.
-	var pivot := _model.to_global(Vector3(0, 0.4, 3.15))
+	var pivot := _model.to_global(Vector3(0, 0.4, float(_size.axles[-1][0]) - 0.5))
 	for _step in 4:
 		var dy := truck_point.y - hitch_point().y
 		var arm := hitch_point() - pivot
@@ -303,75 +322,81 @@ func unhitch() -> void:
 
 ## Where the next trailer's drawbar hooks on, at the back of this one.
 func rear_hitch_point() -> Vector3:
-	return _model.to_global(Vector3(0, 0.85, DECK_LENGTH * 0.5 + 0.5))
+	return _model.to_global(Vector3(0, 0.85, _len * 0.5 + 0.5))
 
 
 func _build() -> void:
 	var top := DECK_HEIGHT
-	var half := DECK_LENGTH * 0.5
+	var half := _len * 0.5
 	var paint := Kit.paint(BODY)
 	var frame := Kit.paint(FRAME, 0.6, 0.3)
 	# Main I-beams and cross members.
 	for x in [-0.55, 0.55]:
-		Kit.box(_model, Vector3(0.22, 0.42, DECK_LENGTH + 0.6), Vector3(x, top - 0.38, 0.2), frame, 0.03)
-	for k in 7:
-		Kit.box(_model, Vector3(2.0, 0.12, 0.14), Vector3(0, top - 0.32, -half + 0.6 + k * 1.3), frame, 0.02)
+		Kit.box(_model, Vector3(0.22, 0.42, _len + 0.6), Vector3(x, top - 0.38, 0.2), frame, 0.03)
+	var members := int(_len / 1.3) + 1
+	for k in members:
+		Kit.box(_model, Vector3(_wid - 1.0, 0.12, 0.14), Vector3(0, top - 0.32, -half + 0.6 + k * (_len - 1.2) / (members - 1)), frame, 0.02)
 	# Deck: side rails in paint, hardwood planks between, stake pockets and tie-down rings.
 	for x in [-1.0, 1.0]:
-		Kit.box(_model, Vector3(0.22, 0.34, DECK_LENGTH), Vector3(x * (DECK_WIDTH * 0.5 - 0.11), top - 0.17, 0), paint, 0.04)
-		for k in 8:
-			Kit.box(_model, Vector3(0.1, 0.12, 0.12), Vector3(x * (DECK_WIDTH * 0.5 - 0.02), top - 0.06, -half + 0.6 + k * 1.1), frame, 0.02)
-			Kit.add(_model, Kit.cylinder(0.05, 0.02, 8), Vector3(x * (DECK_WIDTH * 0.5 - 0.3), top + 0.02, -half + 0.6 + k * 1.1), Kit.metal(STEEL))
-	var plank_count := 12
+		Kit.box(_model, Vector3(0.22, 0.34, _len), Vector3(x * (_wid * 0.5 - 0.11), top - 0.17, 0), paint, 0.04)
+		var pockets := int(_len / 1.1)
+		for k in pockets:
+			Kit.box(_model, Vector3(0.1, 0.12, 0.12), Vector3(x * (_wid * 0.5 - 0.02), top - 0.06, -half + 0.6 + k * 1.1), frame, 0.02)
+			Kit.add(_model, Kit.cylinder(0.05, 0.02, 8), Vector3(x * (_wid * 0.5 - 0.3), top + 0.02, -half + 0.6 + k * 1.1), Kit.metal(STEEL))
+	var plank_count := int(_len / 0.75)
 	for k in plank_count:
 		var shade := DECK.lightened(0.06) if k % 2 == 0 else DECK.darkened(0.05)
-		Kit.box(_model, Vector3(DECK_WIDTH - 0.44, 0.08, DECK_LENGTH / plank_count - 0.02),
-				Vector3(0, top - 0.04, -half + (k + 0.5) * DECK_LENGTH / plank_count), Kit.matte(shade), 0.01)
+		Kit.box(_model, Vector3(_wid - 0.44, 0.08, _len / plank_count - 0.02),
+				Vector3(0, top - 0.04, -half + (k + 0.5) * _len / plank_count), Kit.matte(shade), 0.01)
 	# Headboard with a hazard band, drawbar, jack stand.
-	Kit.box(_model, Vector3(DECK_WIDTH, 0.9, 0.18), Vector3(0, top + 0.45, -half), paint, 0.05)
-	Kit.box(_model, Vector3(DECK_WIDTH + 0.02, 0.18, 0.2), Vector3(0, top + 0.78, -half), Kit.hazard(), 0.03)
-	Kit.beam(_model, Vector3(-0.5, 0.85, -half + 0.2), HITCH, 0.16, frame)
-	Kit.beam(_model, Vector3(0.5, 0.85, -half + 0.2), HITCH, 0.16, frame)
-	Kit.add(_model, Kit.cylinder(0.12, 0.12, 12), HITCH, Kit.metal(STEEL), Vector3(PI * 0.5, 0, 0))
+	Kit.box(_model, Vector3(_wid, 0.9, 0.18), Vector3(0, top + 0.45, -half), paint, 0.05)
+	Kit.box(_model, Vector3(_wid + 0.02, 0.18, 0.2), Vector3(0, top + 0.78, -half), Kit.hazard(), 0.03)
+	Kit.beam(_model, Vector3(-0.5, 0.85, -half + 0.2), _hitch, 0.16, frame)
+	Kit.beam(_model, Vector3(0.5, 0.85, -half + 0.2), _hitch, 0.16, frame)
+	Kit.add(_model, Kit.cylinder(0.12, 0.12, 12), _hitch, Kit.metal(STEEL), Vector3(PI * 0.5, 0, 0))
 	Kit.add(_model, Kit.cylinder(0.05, 0.7, 8), Vector3(0.45, 0.45, -half - 0.6), frame)
 	# Mudguards over the axles, mudflaps, lights and reflectors.
+	var track: float = _size.track
 	for x in [-1.0, 1.0]:
-		for z in [-3.6, 3.15]:
+		for a in _size.axles:
 			var arch := PackedVector2Array()
 			for k in 9:
-				var a := PI * k / 8.0
-				arch.append(Vector2(-cos(a) * 0.75 + (0.0 if z < 0.0 else 0.0), sin(a) * 0.62))
-			Kit.add(_model, Kit.prism(arch, 0.5), Vector3(x * 1.15, 0.58, z * 1.0), Kit.paint(FRAME, 0.7, 0.1))
-		Kit.box(_model, Vector3(0.5, 0.5, 0.03), Vector3(x * 1.15, 0.45, 4.35), Kit.matte(Color(0.1, 0.1, 0.1)), 0.01)
-		Kit.box(_model, Vector3(0.24, 0.14, 0.06), Vector3(x * 1.3, top - 0.25, half + 0.04), Kit.glow(Color(0.95, 0.08, 0.04)), 0.02)
-		Kit.box(_model, Vector3(0.12, 0.08, 0.04), Vector3(x * 1.52, top - 0.22, -half + 1.0), Kit.glow(Color(1.0, 0.55, 0.05), 1.2), 0.01)
-	Kit.box(_model, Vector3(DECK_WIDTH, 0.16, 0.08), Vector3(0, top - 0.42, half + 0.03), Kit.hazard(), 0.02)
-	Kit.label(_model, "EARTHWORKS CO.", Vector3(-DECK_WIDTH * 0.5 - 0.01, top - 0.17, 0), 0.006, Color.WHITE, -PI * 0.5)
-	Kit.label(_model, "EARTHWORKS CO.", Vector3(DECK_WIDTH * 0.5 + 0.01, top - 0.17, 0), 0.006, Color.WHITE, PI * 0.5)
+				var t := PI * k / 8.0
+				arch.append(Vector2(-cos(t) * 0.6, sin(t) * 0.62))
+			Kit.add(_model, Kit.prism(arch, 0.5), Vector3(x * track, 0.58, float(a[0])), Kit.paint(FRAME, 0.7, 0.1))
+		Kit.box(_model, Vector3(0.5, 0.5, 0.03), Vector3(x * track, 0.45, float(_size.axles[-1][0]) + 0.65), Kit.matte(Color(0.1, 0.1, 0.1)), 0.01)
+		Kit.box(_model, Vector3(0.24, 0.14, 0.06), Vector3(x * (_wid * 0.5 - 0.2), top - 0.25, half + 0.04), Kit.glow(Color(0.95, 0.08, 0.04)), 0.02)
+		Kit.box(_model, Vector3(0.12, 0.08, 0.04), Vector3(x * (_wid * 0.5 + 0.02), top - 0.22, -half + 1.0), Kit.glow(Color(1.0, 0.55, 0.05), 1.2), 0.01)
+	Kit.box(_model, Vector3(_wid, 0.16, 0.08), Vector3(0, top - 0.42, half + 0.03), Kit.hazard(), 0.02)
+	Kit.label(_model, "EARTHWORKS CO.", Vector3(-_wid * 0.5 - 0.01, top - 0.17, 0), 0.006, Color.WHITE, -PI * 0.5)
+	Kit.label(_model, "EARTHWORKS CO.", Vector3(_wid * 0.5 + 0.01, top - 0.17, 0), 0.006, Color.WHITE, PI * 0.5)
 
 	if variant == "logs":
 		_build_log_bunks(top, half, paint, frame)
 		return
 	# Hydraulic ramps on a hinge at the back of the deck.
-	_ramp_down_angle = atan2(top, RAMP_LENGTH)
+	_ramp_down_angle = atan2(top, _ramp_len)
 	_ramp = Node3D.new()
 	_ramp.position = Vector3(0, top, half)
 	_ramp.rotation.x = _ramp_down_angle
 	_model.add_child(_ramp)
-	for x in [-0.85, 0.85]:
-		Kit.box(_ramp, Vector3(0.95, 0.1, RAMP_LENGTH), Vector3(x, -0.05, RAMP_LENGTH * 0.5), Kit.metal(STEEL), 0.02)
+	# Two ramps on the lowboy; two broad plates (nearly full width) on the wide flatbed.
+	var plate := 0.95 if variant != "flatbed" else _wid * 0.5 - 0.15
+	var plate_x := 0.85 if variant != "flatbed" else _wid * 0.25 + 0.02
+	for x in [-plate_x, plate_x]:
+		Kit.box(_ramp, Vector3(plate, 0.1, _ramp_len), Vector3(x, -0.05, _ramp_len * 0.5), Kit.metal(STEEL), 0.02)
 		for side in [-1.0, 1.0]:
-			Kit.box(_ramp, Vector3(0.06, 0.16, RAMP_LENGTH), Vector3(x + side * 0.46, 0.0, RAMP_LENGTH * 0.5), paint, 0.02)
-		for k in 9:
-			Kit.box(_ramp, Vector3(0.9, 0.04, 0.05), Vector3(x, 0.02, 0.15 + k * 0.28), Kit.matte(FRAME), 0.01)
-	for x in [-1.3, 1.3]:
+			Kit.box(_ramp, Vector3(0.06, 0.16, _ramp_len), Vector3(x + side * (plate * 0.5 - 0.02), 0.0, _ramp_len * 0.5), paint, 0.02)
+		for k in int(_ramp_len / 0.28):
+			Kit.box(_ramp, Vector3(plate - 0.05, 0.04, 0.05), Vector3(x, 0.02, 0.15 + k * 0.28), Kit.matte(FRAME), 0.01)
+	for x in [-(_wid * 0.5 - 0.2), _wid * 0.5 - 0.2]:
 		Kit.add(_model, Kit.cylinder(0.07, 0.5, 8), Vector3(x, top - 0.25, half - 0.3), Kit.metal(STEEL), Vector3(0.8, 0, 0))
 
 	# Collision: deck, headboard, drawbar, and the ramp (moved with it each frame).
-	_shape(Vector3(DECK_WIDTH, 0.3, DECK_LENGTH), Transform3D(Basis.IDENTITY, Vector3(0, top - 0.15, 0)))
-	_shape(Vector3(DECK_WIDTH, 0.9, 0.2), Transform3D(Basis.IDENTITY, Vector3(0, top + 0.45, -half)))
+	_shape(Vector3(_wid, 0.3, _len), Transform3D(Basis.IDENTITY, Vector3(0, top - 0.15, 0)))
+	_shape(Vector3(_wid, 0.9, 0.2), Transform3D(Basis.IDENTITY, Vector3(0, top + 0.45, -half)))
 	_shape(Vector3(0.3, 0.25, 2.0), Transform3D(Basis.IDENTITY, Vector3(0, 0.85, -half - 1.0)))
-	_ramp_shape = _shape(Vector3(DECK_WIDTH, 0.12, RAMP_LENGTH), Transform3D.IDENTITY)
+	_ramp_shape = _shape(Vector3(_wid, 0.12, _ramp_len), Transform3D.IDENTITY)
 
 
 ## Log trailer: four bunks with tall stakes along the deck and a log guard at the front,
@@ -380,22 +405,22 @@ func _build() -> void:
 func _build_log_bunks(top: float, half: float, paint: Material, frame: Material) -> void:
 	var steel := Kit.paint(Color(0.2, 0.2, 0.22), 0.5, 0.4)
 	for k in 4:
-		var z := -half + 1.0 + k * (DECK_LENGTH - 2.0) / 3.0
-		Kit.box(_model, Vector3(DECK_WIDTH, 0.2, 0.26), Vector3(0, top + 0.1, z), steel, 0.03)
+		var z := -half + 1.0 + k * (_len - 2.0) / 3.0
+		Kit.box(_model, Vector3(_wid, 0.2, 0.26), Vector3(0, top + 0.1, z), steel, 0.03)
 		for x in [-1.0, 1.0]:
-			Kit.box(_model, Vector3(0.14, 1.9, 0.14), Vector3(x * (DECK_WIDTH * 0.5 - 0.08), top + 1.05, z), paint, 0.03)
-			Kit.box(_model, Vector3(0.16, 0.16, 0.16), Vector3(x * (DECK_WIDTH * 0.5 - 0.08), top + 2.02, z), Kit.hazard(), 0.03)
+			Kit.box(_model, Vector3(0.14, 1.9, 0.14), Vector3(x * (_wid * 0.5 - 0.08), top + 1.05, z), paint, 0.03)
+			Kit.box(_model, Vector3(0.16, 0.16, 0.16), Vector3(x * (_wid * 0.5 - 0.08), top + 2.02, z), Kit.hazard(), 0.03)
 	for k in 6:
 		Kit.box(_model, Vector3(0.08, 1.4, 0.08), Vector3(-1.2 + k * 0.48, top + 1.2, -half), steel, 0.02)
-	Kit.label(_model, "TIMBER", Vector3(-DECK_WIDTH * 0.5 - 0.02, top + 0.4, 0), 0.006, Color.WHITE, -PI * 0.5)
-	Kit.label(_model, "TIMBER", Vector3(DECK_WIDTH * 0.5 + 0.02, top + 0.4, 0), 0.006, Color.WHITE, PI * 0.5)
+	Kit.label(_model, "TIMBER", Vector3(-_wid * 0.5 - 0.02, top + 0.4, 0), 0.006, Color.WHITE, -PI * 0.5)
+	Kit.label(_model, "TIMBER", Vector3(_wid * 0.5 + 0.02, top + 0.4, 0), 0.006, Color.WHITE, PI * 0.5)
 	_ramp = Node3D.new()
 	_ramp.position = Vector3(0, top, half)
 	_model.add_child(_ramp)
-	_shape(Vector3(DECK_WIDTH, 0.3, DECK_LENGTH), Transform3D(Basis.IDENTITY, Vector3(0, top - 0.15, 0)))
-	_shape(Vector3(0.14, 1.9, DECK_LENGTH), Transform3D(Basis.IDENTITY, Vector3(-(DECK_WIDTH * 0.5 - 0.08), top + 0.95, 0)))
-	_shape(Vector3(0.14, 1.9, DECK_LENGTH), Transform3D(Basis.IDENTITY, Vector3(DECK_WIDTH * 0.5 - 0.08, top + 0.95, 0)))
-	_shape(Vector3(DECK_WIDTH, 1.6, 0.2), Transform3D(Basis.IDENTITY, Vector3(0, top + 0.8, -half)))
+	_shape(Vector3(_wid, 0.3, _len), Transform3D(Basis.IDENTITY, Vector3(0, top - 0.15, 0)))
+	_shape(Vector3(0.14, 1.9, _len), Transform3D(Basis.IDENTITY, Vector3(-(_wid * 0.5 - 0.08), top + 0.95, 0)))
+	_shape(Vector3(0.14, 1.9, _len), Transform3D(Basis.IDENTITY, Vector3(_wid * 0.5 - 0.08, top + 0.95, 0)))
+	_shape(Vector3(_wid, 1.6, 0.2), Transform3D(Basis.IDENTITY, Vector3(0, top + 0.8, -half)))
 	_shape(Vector3(0.3, 0.25, 2.0), Transform3D(Basis.IDENTITY, Vector3(0, 0.85, -half - 1.0)))
 	_ramp_shape = _shape(Vector3(0.1, 0.1, 0.1), Transform3D(Basis.IDENTITY, Vector3(0, top, half)))
 	_ramp_shape.disabled = true
