@@ -21,12 +21,17 @@ const SPAWNS_PER_FRAME := 40
 const SPACING := 2.6
 const FAR_RANGE := 650.0
 
-## [name, size range, value multiplier]
+## [name, size range, value multiplier]. Wood is worth more the bigger the tree (see
+## tree.gd); the last two are rare finds anywhere: an ancient redwood (4x) or a golden
+## oak (5x).
 const SPECIES := [
-	["pine", Vector2(0.8, 1.35), 1.0], ["pine", Vector2(0.8, 1.35), 1.0],
-	["broadleaf", Vector2(0.8, 1.3), 1.0], ["broadleaf", Vector2(0.8, 1.3), 1.0],
-	["swamp cypress", Vector2(1.1, 1.6), 2.4], ["giant oak", Vector2(1.4, 1.9), 3.0],
+	["pine", Vector2(0.55, 1.8), 1.0], ["pine", Vector2(0.55, 1.8), 1.0],
+	["broadleaf", Vector2(0.55, 1.7), 1.0], ["broadleaf", Vector2(0.55, 1.7), 1.0],
+	["swamp cypress", Vector2(0.9, 2.0), 2.4], ["giant oak", Vector2(1.1, 2.3), 3.0],
+	["ancient redwood", Vector2(1.5, 2.4), 4.0], ["golden oak", Vector2(1.0, 1.8), 5.0],
 ]
+const REDWOOD := 6
+const GOLDEN := 7
 
 var terrain: Terrain
 ## Joining players: trees only change when the host says so.
@@ -40,7 +45,7 @@ var snow := Vector3.ZERO
 var snow_meshes: Array = []
 ## Leaf colour per species (matches the meshes), for the leaves that shower off a felled tree.
 const LEAF_COLORS := [Color(0.2, 0.42, 0.22), Color(0.24, 0.47, 0.25), Color(0.93, 0.72, 0.3),
-	Color(0.45, 0.58, 0.25), Color(0.36, 0.42, 0.24), Color(0.3, 0.45, 0.2)]
+	Color(0.45, 0.58, 0.25), Color(0.36, 0.42, 0.24), Color(0.3, 0.45, 0.2), Color(0.2, 0.4, 0.2), Color(1.0, 0.8, 0.18)]
 var pos := PackedVector3Array()
 var yaw := PackedFloat32Array()
 var size := PackedFloat32Array()
@@ -61,10 +66,10 @@ func setup(terrain_node: Terrain) -> void:
 	terrain = terrain_node
 	meshes = [Scenery.pine_mesh(Color(0.2, 0.42, 0.22)), Scenery.pine_mesh(Color(0.24, 0.47, 0.25)),
 		Scenery.broadleaf_mesh(Color(0.93, 0.72, 0.3)), Scenery.broadleaf_mesh(Color(0.45, 0.58, 0.25)),
-		Scenery.cypress_mesh(), Scenery.oak_mesh()]
+		Scenery.cypress_mesh(), Scenery.oak_mesh(), Scenery.redwood_mesh(), Scenery.golden_mesh()]
 	var winter := Scenery.winter_tree_mesh()
 	snow_meshes = [Scenery.snowy_pine_mesh(Color(0.2, 0.42, 0.22)), Scenery.snowy_pine_mesh(Color(0.24, 0.47, 0.25)),
-		winter, winter, winter, winter]
+		winter, winter, winter, winter, meshes[REDWOOD], meshes[GOLDEN]]
 	_stump_mesh = ForestTree.stump_mesh()
 	cells.resize(GRID * GRID)
 	for k in cells.size():
@@ -104,8 +109,14 @@ func add_forest(center: Vector2, radius: float, count: int, weights: Array, rng:
 			if pick <= 0.0:
 				kind = k
 				break
-		var range_: Vector2 = SPECIES[kind][1]
 		var tid := pos.size()
+		# Now and then a rare one (decided by the tree's number, so the map stays the same).
+		var rarity := (tid * 7919 + 104729) % 1000
+		if rarity < 10:
+			kind = GOLDEN
+		elif rarity < 32:
+			kind = REDWOOD
+		var range_: Vector2 = SPECIES[kind][1]
 		pos.append(Vector3(p.x, terrain.sample_height(p.x, p.y), p.y))
 		yaw.append(rng.randf() * TAU)
 		size.append(rng.randf_range(range_.x, range_.y))
@@ -199,6 +210,7 @@ func _spawn(tid: int) -> void:
 	tree.trunk_mesh = snow_meshes[species[tid]] if in_snow(tid) else meshes[species[tid]]
 	tree.size = size[tid]
 	tree.value_mult = SPECIES[species[tid]][2]
+	tree.species_name = SPECIES[species[tid]][0]
 	tree.leaf_color = LEAF_COLORS[species[tid]]
 	if in_snow(tid):
 		# Pines shake off snow when they fall; bare winter trees have no leaves to lose.
@@ -271,6 +283,30 @@ func _rebuild_cell(c: int) -> void:
 
 
 # --- Queries --------------------------------------------------------------------------------
+
+## What a standing tree is and is worth, for the on-foot prompt: "GOLDEN OAK · 34 studs
+## tall · worth $1,900" (log and stump together).
+func describe(tid: int) -> String:
+	var kind: Array = SPECIES[species[tid]]
+	var s := size[tid]
+	var height := ForestTree.TREE_HEIGHT * s * (1.45 if species[tid] == REDWOOD else 1.0)
+	var worth := ForestTree.log_value(s, kind[2]) + ForestTree.stump_value(s, kind[2])
+	return "%s  ·  %d studs tall  ·  worth $%d" % [String(kind[0]).to_upper(), ForestTree.studs(height), worth]
+
+
+## The nearest standing tree within `reach` of `p` (-1 if none).
+func nearest_tree(p: Vector3, reach: float) -> int:
+	var best := -1
+	var best_d := reach
+	for c in _cells_around(Vector2(p.x, p.z), reach):
+		for tid in cells[c]:
+			if state[tid] == 0:
+				var d := Vector2(pos[tid].x - p.x, pos[tid].z - p.z).length()
+				if d < best_d:
+					best_d = d
+					best = tid
+	return best
+
 
 func node_for(tid: int) -> Node3D:
 	var t: Node3D = live.get(tid)
@@ -357,7 +393,7 @@ func apply_event(tid: int, event: String, parent: Node) -> RigidBody3D:
 		else:
 			state[tid] = 1
 			body = ForestTree.make_log(parent, Transform3D(Basis(Vector3.UP, yaw[tid]), pos[tid] + Vector3(0, 0.05, 0)),
-					size[tid], meshes[species[tid]], SPECIES[species[tid]][2])
+					size[tid], meshes[species[tid]], SPECIES[species[tid]][2], SPECIES[species[tid]][0])
 			_rebuild_cell(_cell_of(Vector2(pos[tid].x, pos[tid].z)))
 			body_spawned.emit(tid, body, "log")
 			felled.emit(tid)
@@ -370,7 +406,7 @@ func apply_event(tid: int, event: String, parent: Node) -> RigidBody3D:
 		else:
 			state[tid] = 2
 			body = ForestTree.make_stump(parent, Transform3D(Basis(Vector3.UP, yaw[tid]), pos[tid] + Vector3(0, 0.15, 0)),
-					size[tid], SPECIES[species[tid]][2])
+					size[tid], SPECIES[species[tid]][2], SPECIES[species[tid]][0])
 			_rebuild_cell(_cell_of(Vector2(pos[tid].x, pos[tid].z)))
 			body_spawned.emit(tid, body, "stump")
 			stump_freed.emit(tid)

@@ -63,6 +63,9 @@ const SURFACE_SOIL := 0
 const SURFACE_GRAVEL := 1
 const SURFACE_SNOW := 2  # firm, white; shows the soil once dug or driven to mud
 const SURFACE_ICE := 3  # a frozen pond: slippery, nothing sinks
+const SURFACE_ROCK := 4  # mountain rock: grey, no mud, digs at a quarter of the speed
+const ROCK_HARD := 0.25  # how much of a cut a machine gets through in rock
+const ROCK_FACE := Color(0.55, 0.53, 0.5)
 
 # World features (recorded while laying out the world, replayed onto each block).
 const OP_MOUND := 0
@@ -76,6 +79,7 @@ const OP_DISTURB := 7
 const OP_NOGRASS := 8
 const OP_SNOW := 9
 const OP_ICE := 10
+const OP_ROCK := 11
 
 const SHADER := """
 shader_type spatial;
@@ -124,11 +128,14 @@ var grass_mask := PackedByteArray()  # 0 where grass never grows (water beds, ya
 var mud := PackedFloat32Array()  # 0 dry .. 1 deep mud
 var surface := PackedByteArray()  # SURFACE_SOIL / GRAVEL / SNOW / ICE
 var pressed := PackedByteArray()  # 1 = already rutted by tracks or wheels
+var firm := PackedByteArray()  # 1 = a sawn trench wall: holds a vertical face (no slumping)
 var protected := PackedByteArray()  # 1 = can't be dug below its original level (the depot)
 ## Detailed chunks load around this node (the camera).
 var focus: Node3D
 ## The volume the last cut_flat() wanted to remove (for the dozer's hold-back).
 var last_cut_wanted := 0.0
+## Swamps (x, z, radius): mud there runs deeper than anywhere else (see mud_depth).
+var deep_zones: Array = []
 ## The machine whose dig or cut is running right now (so ore it turns up can go into its
 ## bucket); set by the machine around the call.
 var digger: Node = null
@@ -198,6 +205,8 @@ func generate(seed_value: int) -> void:
 	surface.fill(SURFACE_SOIL)
 	pressed.resize(count)
 	pressed.fill(0)
+	firm.resize(count)
+	firm.fill(0)
 	protected.resize(count)
 	protected.fill(0)
 	_generated.resize(GEN_CHUNKS * GEN_CHUNKS)
@@ -320,6 +329,31 @@ func paint_ice(center: Vector2, radius: float) -> void:
 
 
 ## Whether a point is on ice (vehicles lose grip).
+## A rock mountain's rocky ground: grey, firm, hard to dig (circle; set before finalize).
+func paint_rock(center: Vector2, radius: float) -> void:
+	_record({"t": OP_ROCK, "c": center, "r": radius,
+		"rect": Rect2(center - Vector2.ONE * radius, Vector2.ONE * radius * 2.0)})
+
+
+func is_rock(wx: float, wz: float) -> bool:
+	return surface[_index_at(wx, wz)] == SURFACE_ROCK
+
+
+## How deep the mud is for sinking machines: the ground's mud (0..1), up to 2.3x in the
+## middle of a swamp.
+func mud_depth(wx: float, wz: float) -> float:
+	var m := mud_at(wx, wz)
+	if m < 0.3:
+		return m
+	var p := Vector2(wx, wz)
+	for zone in deep_zones:
+		var d := p.distance_to(Vector2(zone.x, zone.y))
+		if d < zone.z:
+			m *= 1.0 + 1.3 * smoothstep(zone.z, zone.z * 0.45, d)
+			break
+	return m
+
+
 func is_ice(wx: float, wz: float) -> bool:
 	return surface[_index_at(wx, wz)] == SURFACE_ICE
 
@@ -444,7 +478,7 @@ func _apply_op(op: Dictionary, r: Rect2i, update_original := true) -> void:
 	var x0 := r.position.x
 	var x1 := r.end.x
 	var t: int = op.t
-	if t == OP_MOUND or t == OP_RING or t == OP_MUD or t == OP_DISTURB or t == OP_NOGRASS or t == OP_SNOW or t == OP_ICE:
+	if t == OP_MOUND or t == OP_RING or t == OP_MUD or t == OP_DISTURB or t == OP_NOGRASS or t == OP_SNOW or t == OP_ICE or t == OP_ROCK:
 		var cx: float = op.c.x
 		var cz: float = op.c.y
 		var rad: float = op.get("r", op.get("outer", 0.0))
@@ -485,6 +519,11 @@ func _apply_op(op: Dictionary, r: Rect2i, update_original := true) -> void:
 						surface[i] = SURFACE_ICE
 						grass_mask[i] = 0
 						mud[i] = 0.0
+					OP_ROCK:
+						if d < rad * _snow_edge(dx * 1.7, dz * 1.7):
+							surface[i] = SURFACE_ROCK
+							grass_mask[i] = 0
+							mud[i] = 0.0
 				if keep:
 					original[i] = heights[i]
 	elif t == OP_FLATTEN:
@@ -634,6 +673,10 @@ func _sample(x: int, z: int) -> Vector4:
 			OP_ICE:
 				if w.distance_to(op.c) < op.r:
 					g = 3.0
+					m = 0.0
+			OP_ROCK:
+				if w.distance_to(op.c) < op.r * _snow_edge((w.x - op.c.x) * 1.7, (w.y - op.c.y) * 1.7):
+					g = 4.0
 					m = 0.0
 			OP_PROTECT:
 				p = 1.0
@@ -807,7 +850,8 @@ func soil_change(center: Vector2, half: Vector2, sign: float, cap: float, radius
 	return total * CELL_AREA
 
 
-func dig(center: Vector3, radius: float, max_volume: float) -> float:
+## (`sawn`: a trench saw's cut. Its walls stand vertical instead of slumping in.)
+func dig(center: Vector3, radius: float, max_volume: float, sawn := false) -> float:
 	var rect := _vertex_rect(center.x, center.z, radius)
 	_ensure(rect)
 	var indices := PackedInt32Array()
@@ -823,6 +867,8 @@ func dig(center: Vector3, radius: float, max_volume: float) -> float:
 			var i := z * VERTS + x
 			var target := maxf(center.y + t * t * radius * 0.9, _floor(i))
 			var cut := heights[i] - target
+			if surface[i] == SURFACE_ROCK:
+				cut *= ROCK_HARD
 			if cut > 0.0:
 				indices.append(i)
 				cuts.append(cut)
@@ -834,7 +880,17 @@ func dig(center: Vector3, radius: float, max_volume: float) -> float:
 		heights[indices[k]] -= cuts[k] * scale_factor
 		disturbed[indices[k]] = 1
 		pressed[indices[k]] = 0
-	_on_edited(rect)
+		firm[indices[k]] = 0
+	if sawn:
+		# The slot and the ground either side of it hold their faces.
+		for k in indices.size():
+			var i := indices[k]
+			for n in [i, i - 1, i + 1, i - VERTS, i + VERTS]:
+				if n >= 0 and n < firm.size():
+					firm[n] = 1
+		_mark_dirty(rect)
+	else:
+		_on_edited(rect)
 	soil_removed.emit(center, total * CELL_AREA * scale_factor, dug_depth(center.x, center.z))
 	return total * CELL_AREA * scale_factor
 
@@ -884,6 +940,7 @@ func cut_flat(a: Vector3, b: Vector3, forward: Vector3, back: float, front: floa
 	var indices := PackedInt32Array()
 	var cuts := PackedFloat32Array()
 	var total := 0.0
+	var wanted := 0.0
 	for z in range(r.position.y, r.end.y):
 		for x in range(r.position.x, r.end.x):
 			var w := grid_to_world(x, z) - Vector2(a.x, a.z)
@@ -894,10 +951,13 @@ func cut_flat(a: Vector3, b: Vector3, forward: Vector3, back: float, front: floa
 			var i := z * VERTS + x
 			var cut := heights[i] - maxf(lerpf(a.y, b.y, u), _floor(i))
 			if cut > 0.0:
+				wanted += cut
+				if surface[i] == SURFACE_ROCK:
+					cut *= ROCK_HARD  # the blade only scrapes rock
 				indices.append(i)
 				cuts.append(cut)
 				total += cut
-	last_cut_wanted = total * CELL_AREA
+	last_cut_wanted = wanted * CELL_AREA
 	if total <= 0.0:
 		return 0.0
 	var scale_factor := minf(1.0, max_volume / (total * CELL_AREA))
@@ -1036,7 +1096,7 @@ func level_strip(center: Vector3, forward: Vector3, half_length: float, half_wid
 				continue
 			var i := z * VERTS + x
 			var target := maxf(level, _floor(i))
-			var change := clampf(target - heights[i], -step, step)
+			var change := clampf(target - heights[i], -step * (ROCK_HARD if surface[i] == SURFACE_ROCK else 1.0), step)
 			if absf(change) < 0.0005:
 				pressed[i] = 1
 				continue
@@ -1267,7 +1327,12 @@ func _build_chunk(cx: int, cz: int) -> void:
 			var dug := original[i] - h
 			var c: Color
 			var glassy := 0.0
-			if disturbed[i] == 0 and absf(dug) < 0.03:
+			if kind == SURFACE_ROCK:
+				# Bare rock, mottled; a fresh cut shows darker stone.
+				var mottle := float((x * 73856093) ^ (z * 19349663)) / 2147483647.0
+				c = ROCK_FACE.darkened(0.06 + 0.1 * absf(fmod(mottle * 7.0, 1.0)) + (0.12 if disturbed[i] == 1 else 0.0))
+				c.a = 1.0
+			elif disturbed[i] == 0 and absf(dug) < 0.03:
 				c = GRAVEL if gravel else (SNOW if kind == SURFACE_SNOW else (ICE if kind == SURFACE_ICE else GROUND))
 				c.a = 0.0
 				glassy = 1.0 if kind == SURFACE_ICE else 0.0
@@ -1345,7 +1410,9 @@ func _build_far_tile(t: int) -> void:
 				var w := grid_to_world(x, z)
 				var info := info_at(w.x, w.y)
 				verts[k] = Vector3(w.x, info.x - 0.04, w.y)
-				var c: Color = LOOSE if info.w > 0.5 else [GROUND, GRAVEL, SNOW, ICE][clampi(roundi(info.z), 0, 3)]
+				var c: Color = LOOSE if info.w > 0.5 else [GROUND, GRAVEL, SNOW, ICE, ROCK_FACE.darkened(0.1)][clampi(roundi(info.z), 0, 4)]
+				if roundi(info.z) == SURFACE_ROCK:
+					info.w = 1.0  # (drawn as bare ground, no grass)
 				c = c.lerp(MUD, info.y * 0.85)
 				c.a = info.w
 				colors[k] = c
@@ -1529,7 +1596,7 @@ func _slump_pass() -> void:
 
 func _relax(a: int, b: int) -> bool:
 	var diff := heights[a] - heights[b]
-	if absf(diff) <= TALUS + 0.002:
+	if absf(diff) <= TALUS + 0.002 or firm[a] == 1 or firm[b] == 1:
 		return false
 	# Natural slopes stay as they are (a riverbank or hillside steeper than loose soil's
 	# angle would otherwise keep eroding forever once a dig nearby set it going); only
@@ -1540,7 +1607,7 @@ func _relax(a: int, b: int) -> bool:
 	var move := (diff - signf(diff) * limit) * 0.25
 	# Protected ground holds its shape: it only sheds spoil piled on top of it.
 	var giver := a if move > 0.0 else b
-	if protected[giver] == 1:
+	if protected[giver] == 1 or surface[giver] == SURFACE_ROCK:
 		var spare := heights[giver] - original[giver]
 		if spare <= 0.0005:
 			return false

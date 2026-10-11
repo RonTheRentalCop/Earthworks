@@ -29,6 +29,15 @@ jobs:
           mv templates ~/.local/share/godot/export_templates/${GODOT_VERSION}.stable
           echo "GODOT=$PWD/Godot_v${GODOT_VERSION}-stable_linux.x86_64" >> "$GITHUB_ENV"
 
+      - name: Stamp the version from the tag (the auto-updater compares versions)
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          V="${GITHUB_REF_NAME#v}"
+          sed -i "s/^config\/version=.*/config\/version=\"$V\"/" project.godot
+          sed -i "s/^application\/short_version=.*/application\/short_version=\"$V\"/; s/^application\/version=.*/application\/version=\"$V\"/" export_presets.cfg
+          sed -i "s/^application\/file_version=.*/application\/file_version=\"$V.0\"/; s/^application\/product_version=.*/application\/product_version=\"$V.0\"/" export_presets.cfg
+          grep -n "config/version" project.godot
+
       - name: Export universal macOS app (Apple Silicon + Intel)
         run: |
           mkdir -p build
@@ -45,6 +54,13 @@ jobs:
           cd build/windows && zip -q ../Earthworks-Windows.zip Earthworks.exe *.dll
           ls -lh ..
 
+      - name: Export update packs (what installed games download to update themselves)
+        continue-on-error: true
+        run: |
+          "$GODOT" --headless --export-pack "Windows" build/Earthworks-Windows.pck
+          "$GODOT" --headless --export-pack "macOS" build/Earthworks-macOS.pck
+          ls -lh build
+
       - uses: actions/upload-artifact@v4
         with:
           if-no-files-found: warn
@@ -52,6 +68,7 @@ jobs:
           path: |
             build/Earthworks-macOS.zip
             build/Earthworks-Windows.zip
+            build/Earthworks-*.pck
 
       - name: Attach to release
         if: startsWith(github.ref, 'refs/tags/')
@@ -61,6 +78,8 @@ jobs:
           files: |
             build/Earthworks-macOS.zip
             build/Earthworks-Windows.zip
+            build/Earthworks-Windows.pck
+            build/Earthworks-macOS.pck
           body: |
             Earthworks ${{ github.ref_name }}
 
@@ -75,3 +94,6 @@ jobs:
 
             **Multiplayer:** one player picks MULTIPLAYER → HOST ONLINE and reads out the room code; the
             others pick JOIN WITH CODE. No port forwarding or VPN needed. Everyone needs the same version.
+
+            **Updates:** from v0.2.9 on, the game updates itself: it downloads new versions in the
+            background (the .pck files here) and runs them after a restart.

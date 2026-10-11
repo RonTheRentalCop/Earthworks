@@ -37,7 +37,7 @@ static func save(main: Node) -> bool:
 				logs.append([int(tid), "log" if k == 0 else "stump", body.global_transform])
 	var debris := []
 	for k in main.debris.size():
-		var b: Node3D = main.debris[k]
+		var b = main.debris[k]  # (untyped: a sold or cleared boulder is a freed instance)
 		debris.append(b.global_transform if is_instance_valid(b) and b.is_inside_tree() else null)
 	var mats := []
 	var ores := []

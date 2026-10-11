@@ -42,6 +42,15 @@ const KINDS := {
 		"capacity": 8.0, "bed_half": Vector2(1.15, 2.27), "bed_height": 1.0, "bed_pivot": Vector3(0, 1.45, 3.0),
 		"winch": [Vector3(0, 1.0, -3.6), 110000.0, 25.0], "hitch": Vector3(0, 0.85, 3.75), "com": 0.9,
 	},
+	"dump_xl": {
+		# Big dump truck: the dump truck at 1.5x (model units scaled; wheels in body space).
+		"name": "Big dump truck", "paint": Color(0.97, 0.72, 0.12), "mass": 24000.0, "engine": 95000.0,
+		"top": 10.5, "loaded_top": 8.0, "reverse": 3.5, "steer": 0.45, "grip": 3.4, "mud_grip": 0.6, "bog": 0.6,
+		"radius": 0.84, "width": 0.7, "wheel_y": 1.42, "rest": 0.45, "travel": 0.4, "scale": 1.5,
+		"axles": [[-3.45, 1.6, true, false, false], [2.25, 1.6, false, true, true], [4.05, 1.6, false, true, true]],
+		"capacity": 24.0, "bed_half": Vector2(1.15, 2.27), "bed_height": 1.0, "bed_pivot": Vector3(0, 1.45, 3.0),
+		"winch": [Vector3(0, 1.0, -3.6), 200000.0, 25.0], "hitch": Vector3(0, 0.85, 3.75), "com": 0.8,
+	},
 	"recovery": {
 		"name": "Recovery truck", "paint": Color(0.8, 0.13, 0.1), "mass": 13000.0, "engine": 32000.0,
 		"top": 11.0, "loaded_top": 11.0, "reverse": 3.5, "steer": 0.5, "grip": 3.0, "mud_grip": 1.6, "bog": 0.2,
@@ -52,7 +61,7 @@ const KINDS := {
 	"recovery_xl": {
 		# Heavy 8x8 rotator wrecker: everything 1.3x a regular recovery truck (model units
 		# below are scaled by "scale"; wheels are placed in body space).
-		"name": "Heavy recovery truck", "paint": Color(0.95, 0.72, 0.08), "mass": 24000.0, "engine": 62000.0,
+		"name": "Heavy recovery truck", "paint": Color(0.95, 0.72, 0.08), "mass": 24000.0, "engine": 170000.0,
 		"top": 10.5, "loaded_top": 10.5, "reverse": 3.5, "steer": 0.45, "grip": 3.4, "mud_grip": 2.0, "bog": 0.1,
 		"radius": 0.72, "width": 0.6, "wheel_y": 1.25, "rest": 0.4, "scale": 1.3,
 		"axles": [[-3.2, 1.4, true, true, false], [-1.75, 1.4, true, true, false], [2.0, 1.4, false, true, true], [3.55, 1.4, false, true, true]],
@@ -69,7 +78,7 @@ const KINDS := {
 		# A big, stable logging rig: 1.4x scale, a stretched chassis on five axles with a wide
 		# stance and a low centre of gravity, and a long, wide bed of tall-staked bunks.
 		# (Model units are scaled by "scale"; wheels are placed in body space.)
-		"name": "Logging semi", "paint": Color(0.55, 0.1, 0.08), "mass": 23000.0, "engine": 78000.0,
+		"name": "Logging semi", "paint": Color(0.55, 0.1, 0.08), "mass": 23000.0, "engine": 220000.0,
 		"top": 15.0, "loaded_top": 13.0, "reverse": 4.0, "steer": 0.42, "grip": 3.6, "mud_grip": 0.7, "bog": 0.5,
 		"radius": 0.82, "width": 0.62, "wheel_y": 1.3, "rest": 0.5, "travel": 0.5, "scale": 1.4, "roll": 0.06,
 		"axles": [[-3.22, 1.75, true, false, false], [2.1, 1.75, false, true, true], [3.78, 1.75, false, true, true],
@@ -833,7 +842,7 @@ func _build_model() -> void:
 		_:
 			_build_cab_truck()
 			match kind:
-				"dump": _build_dump_body(_spec.bed_pivot)
+				"dump", "dump_xl": _build_dump_body(_spec.bed_pivot)
 				"recovery", "recovery_xl": _build_wrecker()
 				"haul": _build_haul()
 				"logs": _build_log_bed()

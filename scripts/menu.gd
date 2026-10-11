@@ -412,7 +412,12 @@ func _fill_pause() -> void:
 		_host_info(box)
 	box.add_child(_rule())
 	var quality_name: String = ["LOW", "MEDIUM", "HIGH"][career.quality]
-	var items := [["RESUME", close], ["DEPOT  ·  HIRE & JOBS", func() -> void: open_depot()],
+	var items := []
+	if main.updater and main.updater.ready_version != "":
+		items.append(["RESTART TO UPDATE  ·  v%s" % main.updater.ready_version, func() -> void:
+			main.save_world()
+			main.updater.restart()])
+	items += [["RESUME", close], ["DEPOT  ·  HIRE & JOBS", func() -> void: open_depot()],
 			["MULTIPLAYER" + ("  ·  %d PLAYERS" % main.net.players.size() if main.net.is_online() else ""), open_multiplayer],
 			["CONTROLS", open_controls], ["GRAPHICS:  " + quality_name, _cycle_quality]]
 	if not main.net.is_client():
@@ -443,7 +448,7 @@ func _cycle_quality() -> void:
 	_fill_pause()
 
 
-## Host a game on this world, or join a friend's (up to 4 players).
+## Host a game on this world, or join a friend's (any number of players).
 func open_multiplayer() -> void:
 	_show(_multi)
 	var holder: Control = _multi.get_child(0)
@@ -467,7 +472,7 @@ func open_multiplayer() -> void:
 			row.add_child(dot)
 			row.add_child(_label("  " + String(p.name) + ("  ·  host" if peer == 1 else ""), 17, TEXT))
 			box.add_child(row)
-		box.add_child(_label("%d / %d players" % [net.players.size(), net.MAX_PLAYERS], 14, MUTED))
+		box.add_child(_label("%d player%s" % [net.players.size(), "" if net.players.size() == 1 else "s"], 14, MUTED))
 		if net.is_host():
 			_host_info(box)
 		var stop := _button("STOP HOSTING" if net.is_host() else "LEAVE GAME", 18)
@@ -482,7 +487,7 @@ func open_multiplayer() -> void:
 			career.player_name = name_edit.text.strip_edges()
 			career.save_settings()
 		box.add_child(_rule())
-		var host_online := _button("HOST ONLINE  ·  get a room code for friends (up to 4 players)", 18)
+		var host_online := _button("HOST ONLINE  ·  get a room code for friends (no player limit)", 18)
 		box.add_child(host_online)
 		host_online.pressed.connect(func() -> void:
 			remember_name.call()
@@ -613,8 +618,8 @@ func _quit() -> void:
 
 func _ask_new() -> void:
 	if _confirm_new:
+		close()  # (first: the new career reloads the scene)
 		new_career.emit()
-		close()
 	else:
 		_confirm_new = true
 		_fill_pause()
@@ -661,7 +666,7 @@ func _render_thumbnails() -> void:
 			"excavator_xl":
 				node = Excavator.new()
 				node.size_scale = 2.0
-			"dozer", "dozer_angle", "dozer_xl", "dozer_angle_xl", "dozer_carry", "conveyor", "roller", "mobile_shredder":
+			"dozer", "dozer_angle", "dozer_xl", "dozer_angle_xl", "dozer_carry", "conveyor", "roller", "roller_xl", "mobile_shredder":
 				node = main._create_vehicle(kind)  # the same machine the game builds
 			"trailer":
 				node = Trailer.new()
@@ -694,7 +699,7 @@ func _render_thumbnails() -> void:
 		# Each family is framed from the same distance, so the big versions look big.
 		var reach: float = {"excavator": 22.0, "excavator_xl": 22.0, "trailer": 19.0, "log_trailer": 19.0, "flatbed": 24.0, "adt": 17.0, "pickup": 11.0,
 			"dozer": 26.0, "dozer_angle": 26.0, "dozer_xl": 26.0, "dozer_angle_xl": 26.0, "dozer_carry": 26.0,
-			"recovery": 19.0, "recovery_xl": 19.0, "conveyor": 34.0, "log_semi": 17.0, "roller": 14.0, "mobile_shredder": 17.0}.get(kind, 14.5)
+			"recovery": 19.0, "recovery_xl": 19.0, "conveyor": 34.0, "log_semi": 17.0, "roller": 14.0, "roller_xl": 20.0, "mobile_shredder": 17.0, "dump_xl": 20.0}.get(kind, 14.5)
 		var look := Vector3(0, 1.6 if kind != "pickup" else 0.9, 0)
 		cam.position = look + Vector3(-0.62, 0.34, -0.7).normalized() * reach
 		if kind in ["dozer", "dozer_angle", "dozer_xl", "dozer_angle_xl", "dozer_carry", "excavator", "excavator_xl"]:

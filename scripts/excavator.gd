@@ -21,7 +21,14 @@ const ATTACHMENTS := [
 	{"name": "Bulk bucket", "scale": 1.25, "capacity": 6.5},
 	{"name": "Trench bucket", "scale": 0.75, "capacity": 1.5},
 	{"name": "Tree grapple", "scale": 1.0, "capacity": 0.0},
+	{"name": "Trench saw", "scale": 1.0, "capacity": 0.0, "saw": true},
 ]
+## Trench saw: a chain-saw bar that hangs plumb from the stick. Lower it into the ground
+## and drag it along: it slices a narrow trench as deep as the bar reaches and throws the
+## spoil out beside it.
+const SAW_LENGTH := 3.2
+const SAW_WIDTH := 0.32
+const SAW_RATE := 1.4  # m3/s
 const JAW_RATE := 1.6
 const GRAB_RADIUS := 1.9
 const GRAB_MASS := 9000.0  # heaviest loose thing the grapple will lift (a big oak log)
@@ -74,7 +81,7 @@ var preview := false
 ## mining excavator). Bucket size, digging rate and reach all grow with it.
 var size_scale := SCALE
 ## Attachments the player owns (indices into ATTACHMENTS).
-var allowed_attachments: Array = [0, 1, 2, 3]
+var allowed_attachments: Array = [0, 1, 2, 3, 4]
 ## Mouse joystick output (mouse_controls.gd): positive action name -> -1..1.
 var mouse_input := {}
 ## Multiplayer: `remote` = driven by another player's controls (remote_axes, sent from
@@ -132,6 +139,11 @@ var _capacity := BUCKET_CAPACITY
 var _dig_radius := DIG_RADIUS
 var _k := 1.0  # size relative to the standard machine
 var _grapple: Node3D
+var _saw: Node3D
+var _saw_chain: Node3D
+var _saw_spin := 0.0
+var _saw_side := 1.0
+var sawing := false
 var _jaws: Array[Node3D] = []
 var _jaw := 0.0  # 0 open .. 1 closed
 var _held_parent: Node
@@ -194,6 +206,7 @@ func _ready() -> void:
 	seat = _node(cab, _rig.seat)
 	_build_dirt_fx()
 	_build_grapple()
+	_build_saw()
 	# Parts that move together draw as one mesh (a few calls per joint instead of ~45).
 	Kit.merge_tree(_visual)
 	winch = Winch.new()
@@ -246,6 +259,8 @@ func _physics_process(delta: float) -> void:
 		_set_joints(current)
 	if _grapple.visible:
 		_operate_grapple(delta)
+	elif _saw.visible:
+		_operate_saw(delta)
 	else:
 		_spill(delta)
 	_rut()
@@ -284,7 +299,7 @@ func _rut() -> void:
 ## Swaps to the next attachment (only with an empty bucket / open grapple).
 ## Ore turned up by the bucket goes in with the soil (not with the grapple on).
 func take_ore(kind: String) -> bool:
-	if _grapple.visible or bucket_ore.size() >= 6:
+	if _grapple.visible or _saw.visible or bucket_ore.size() >= 6:
 		return false
 	bucket_ore.append(kind)
 	_show_ore()
@@ -336,18 +351,21 @@ func cycle_attachment() -> String:
 func set_attachment(index: int) -> String:
 	attachment = index
 	var a: Dictionary = ATTACHMENTS[attachment]
-	var grapple: bool = a.capacity <= 0.0
+	var saw: bool = a.get("saw", false)
+	var grapple: bool = a.capacity <= 0.0 and not saw
+	var no_bucket := grapple or saw
 	_capacity = float(a.capacity) * _k * _k * _k
 	_dig_radius = DIG_RADIUS * float(a.scale) * _k
 	_bucket.scale = Vector3.ONE * float(a.scale)
 	for child in _bucket.get_children():
 		if child is MeshInstance3D:
-			(child as MeshInstance3D).visible = not grapple
+			(child as MeshInstance3D).visible = not no_bucket
 		elif child is AnimatableBody3D:
-			(child as AnimatableBody3D).collision_layer = 0 if grapple else ARM_LAYER
+			(child as AnimatableBody3D).collision_layer = 0 if no_bucket else ARM_LAYER
 	_grapple.visible = grapple
+	_saw.visible = saw
 	_jaw = 0.0
-	if not grapple:
+	if not no_bucket:
 		_bucket.rotation.x = clampf(_bucket.rotation.x, (_rig.bucket_limits as Vector2).x, (_rig.bucket_limits as Vector2).y)
 	return "%s%s" % [a.name, "" if _capacity <= 0.0 else " %.1f m³" % _capacity]
 
@@ -524,6 +542,51 @@ func _build_grapple() -> void:
 	_grapple.visible = false
 
 
+## The saw bar: a long blade with a chain of teeth round it, under a motor housing.
+func _build_saw() -> void:
+	_saw = _node(_bucket, Vector3.ZERO)
+	_box(_saw, Vector3(0.6, 0.6, 0.7), Vector3(0, -0.25, 0), DARK)  # motor
+	_box(_saw, Vector3(0.7, 0.3, 0.8), Vector3(0, -0.6, 0), YELLOW)
+	_box(_saw, Vector3(0.08, SAW_LENGTH, SAW_WIDTH), Vector3(0, -0.7 - SAW_LENGTH * 0.5, 0), Color(0.55, 0.56, 0.58))
+	_saw_chain = _node(_saw, Vector3(0, -0.7 - SAW_LENGTH * 0.5, 0))
+	for k in 16:
+		var y := -SAW_LENGTH * 0.5 + (k + 0.5) * SAW_LENGTH / 16.0
+		for side in [-1.0, 1.0]:
+			_box(_saw_chain, Vector3(0.12, 0.08, 0.06), Vector3(0, y, side * (SAW_WIDTH * 0.5 + 0.02)), Color(0.2, 0.2, 0.22))
+	_saw.visible = false
+
+
+## Wherever the bar is in the ground it cuts: a narrow slot down to the bar's tip, the
+## spoil thrown out to one side then the other.
+func _operate_saw(delta: float) -> void:
+	sawing = false
+	var top := _saw.to_global(Vector3(0, -0.7, 0))
+	var tip := _saw.to_global(Vector3(0, -0.7 - SAW_LENGTH, 0))
+	var budget := SAW_RATE * _k * delta
+	var cut := 0.0
+	for k in 8:
+		var p := top.lerp(tip, (k + 0.5) / 8.0)
+		if p.y < _ground(p) and budget > 0.0:
+			sawing = true
+			terrain.digger = self
+			# (No deeper than the bar is long, below the natural ground.)
+			var floor_y := maxf(tip.y, terrain.original_height(p.x, p.z) - SAW_LENGTH * _k)
+			var removed := terrain.dig(Vector3(p.x, floor_y, p.z), SAW_WIDTH * 0.75 * _k, budget, true)
+			terrain.digger = null
+			budget -= removed
+			cut += removed
+	if cut > 0.0:
+		_dug += cut
+		soil_moved += cut
+		var side := cab.global_basis.x
+		side.y = 0.0
+		_saw_side = -_saw_side
+		var heap := Vector3(tip.x, 0, tip.z) + side.normalized() * (0.9 * _k) * _saw_side
+		terrain.deposit(heap.x, heap.z, cut, 0.7 * _k)
+	_saw_spin += (14.0 if sawing else 3.0) * delta
+	_saw_chain.position.y = -0.7 - SAW_LENGTH * 0.5 + fmod(_saw_spin * 0.05, SAW_LENGTH / 16.0)
+
+
 ## Multiplayer state (host -> joining players).
 func net_state() -> Array:
 	return [_joints(), bucket_load, attachment, _jaw, _track_travel, _speed, _joint_velocity, stalled, driven,
@@ -582,15 +645,17 @@ func _sink_in(delta: float) -> void:
 	if _sink_timer > 0.0:
 		return
 	_sink_timer = 0.5
-	var mud := terrain.mud_at(global_position.x, global_position.z)
+	var mud := terrain.mud_depth(global_position.x, global_position.z)
 	if mud < 0.3:
 		bog = move_toward(bog, 0.0, 0.5 * 0.4)
 		return
 	# Standing still the weight presses the tracks deeper; driving they slowly climb out.
-	if absf(_speed) < 0.2:
-		bog = minf(bog + 0.5 * 0.025 * mud * _k, 0.55 * mud * _k)
-	else:
+	if absf(_speed) >= 0.2:
 		bog = maxf(bog - 0.5 * 0.03, 0.0)
+	elif absf(_axis("drive_back", "drive_forward")) > 0.3:
+		bog = maxf(bog - 0.5 * 0.012, 0.0)  # rocking on the tracks slowly works it free
+	else:
+		bog = minf(bog + 0.5 * 0.025 * mud * _k, 0.55 * mud * _k)
 	if winch.is_attached() and winch.tension > 1000.0:
 		bog = maxf(bog - 0.5 * 0.1, 0.0)
 	var track: Vector2 = (_rig.track as Vector2) * size_scale
@@ -604,7 +669,10 @@ func _sink_in(delta: float) -> void:
 func _sunk_factor() -> float:
 	if _platform != null:
 		return 1.0
-	return 1.0 - clampf((bog - 0.15) / 0.5, 0.0, 0.65)
+	var factor := 1.0 - clampf((bog - 0.15) / 0.5, 0.0, 0.65)
+	# Sunk past the belly pans (deep swamp mud, left standing): stuck fast. Keep moving
+	# through deep mud, or winch it out.
+	return factor * lerpf(1.0, 0.1, clampf((bog - 0.85) / 0.3, 0.0, 1.0))
 
 
 ## Where soil leaves the bucket when it's tipped.
@@ -644,7 +712,9 @@ func rumble() -> Vector2:
 
 func status() -> String:
 	var text: String
-	if _grapple.visible:
+	if _saw.visible:
+		text = "TRENCH SAW   ·   %s" % ("CUTTING" if sawing else "lower the bar into the ground and drag it")
+	elif _grapple.visible:
 		text = "GRAPPLE   ·   %s" % ("HOLDING " + String(held.get_meta("label", "load")).to_upper() if held else ("CLOSED" if _jaw > 0.8 else "OPEN"))
 	else:
 		text = "%s   ·   %.2f m³ · %d%%%s" % [String(ATTACHMENTS[attachment].name).to_upper(), bucket_load,
@@ -655,13 +725,18 @@ func status() -> String:
 
 
 func status_fill() -> float:
+	if _saw.visible:
+		return 0.0
 	return _jaw if _grapple.visible else bucket_load / _capacity
 
 
 ## What the HUD shows for this machine.
 func hud_info() -> Dictionary:
 	var info := {"speed": absf(_speed) * 3.6, "max_speed": MAX_SPEED * 3.6, "flags": [String(ATTACHMENTS[attachment].name).to_upper()]}
-	if _grapple.visible:
+	if _saw.visible:
+		info.load = 0.0
+		info.load_text = "SAW  " + ("CUTTING" if sawing else "LOWER IT INTO THE GROUND")
+	elif _grapple.visible:
 		info.load = _jaw
 		info.load_text = "GRAPPLE  " + ("HOLDING " + String(held.get_meta("label", "load")).to_upper() if is_instance_valid(held) else ("CLOSED" if _jaw > 0.8 else "OPEN"))
 	else:
@@ -677,10 +752,10 @@ func hud_info() -> Dictionary:
 
 
 func _drive(delta: float) -> void:
-	var mud := terrain.mud_at(global_position.x, global_position.z)
+	var mud := terrain.mud_depth(global_position.x, global_position.z)
 	var ice := terrain.is_ice(global_position.x, global_position.z)  # tracks spin and slide
-	_speed = move_toward(_speed, _axis("drive_back", "drive_forward") * MAX_SPEED * (1.0 - MUD_SLOW * mud) * _sunk_factor(), ACCELERATION * (0.18 if ice else 1.0) * delta)
-	var turn := _axis("turn_right", "turn_left") * TURN_RATE * (1.0 - 0.4 * mud) * (0.6 if ice else 1.0)
+	_speed = move_toward(_speed, _axis("drive_back", "drive_forward") * MAX_SPEED * (1.0 - MUD_SLOW * minf(mud, 1.0)) * _sunk_factor(), ACCELERATION * (0.18 if ice else 1.0) * delta)
+	var turn := _axis("turn_right", "turn_left") * TURN_RATE * (1.0 - 0.4 * minf(mud, 1.0)) * (0.6 if ice else 1.0)
 	rotate_y(turn * delta)
 	# Skid steer: turning slows one track and speeds up the other.
 	var track: Vector2 = (_rig.track as Vector2) * size_scale
@@ -701,7 +776,11 @@ func _operate_arm(delta: float) -> void:
 	cab.rotation.y = wrapf(cab.rotation.y + _joint_velocity.x * delta, -PI, PI)
 	_boom.rotation.x = _clamp_joint(_boom.rotation.x + _joint_velocity.y * delta, _rig.boom_limits)
 	_stick.rotation.x = _clamp_joint(_stick.rotation.x + _joint_velocity.z * delta, _rig.stick_limits)
-	if _grapple.visible:
+	if _saw.visible:
+		# The saw bar hangs plumb too.
+		var plumb := _stick.global_basis.inverse() * Vector3.UP
+		_bucket.rotation.x = atan2(plumb.z, plumb.y)
+	elif _grapple.visible:
 		# The grapple hangs plumb; curl/dump drive the jaws instead.
 		var up := _stick.global_basis.inverse() * Vector3.UP
 		_bucket.rotation.x = atan2(up.z, up.y)
@@ -739,7 +818,7 @@ func _follow_ground(delta: float, instant: bool) -> void:
 	var pitch := atan2((fl + fr) - (bl + br), 4.0 * track.x)
 	var roll := atan2((fr + br) - (fl + bl), 4.0 * track.y)
 	var t := 1.0 if instant else 1.0 - exp(-8.0 * delta)
-	var sink := 0.0 if _platform != null else MUD_SINK * terrain.mud_at(p.x, p.z) * _k + bog
+	var sink := 0.0 if _platform != null else MUD_SINK * terrain.mud_depth(p.x, p.z) * _k + bog
 	global_position.y = lerpf(p.y, (fl + fr + bl + br) * 0.25 - sink, t)
 	_visual.rotation.x = lerp_angle(_visual.rotation.x, pitch, t)
 	_visual.rotation.z = lerp_angle(_visual.rotation.z, roll, t)
@@ -790,6 +869,8 @@ func _penetration() -> float:
 ## whether the soil stops this frame's motion: a full bucket can't cut, and an empty
 ## one can only cut DIG_RATE per second.
 func _dig(delta: float, before: float) -> bool:
+	if _saw.visible:
+		return false  # the saw slices through; it never holds the arm up
 	if not _grapple.visible and bucket_load < _capacity - 0.001:
 		var budget := minf(_capacity - bucket_load, DIG_RATE * _k * _k * _k * delta)
 		for local in _rig.carve_points + _rig.block_points:

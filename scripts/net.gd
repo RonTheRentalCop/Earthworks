@@ -1,5 +1,5 @@
 extends Node
-## Multiplayer for up to 4 players, host-authoritative.
+## Multiplayer for any number of players, host-authoritative.
 ##
 ## Two ways to connect:
 ##  - Online (the default): the host gets a room code; friends type it in. Players find each
@@ -21,9 +21,9 @@ extends Node
 signal status_changed(text: String)
 signal players_changed
 
-const VERSION := "earthworks-net-8"  # bump whenever the messages change: mismatched games refuse politely
+const VERSION := "earthworks-net-9"  # bump whenever the messages change: mismatched games refuse politely
 const DEFAULT_PORT := 24680
-const MAX_PLAYERS := 4
+const MAX_PLAYERS := 4095  # no real limit (ENet's ceiling); the host's upload is what runs out
 const STATE_INTERVAL := 0.05  # 20 updates a second
 const INPUT_INTERVAL := 1.0 / 30.0
 const TERRAIN_INTERVAL := 0.25
@@ -219,7 +219,7 @@ func join_online(code: String, player_name: String) -> String:
 
 
 func game_version() -> String:
-	return String(ProjectSettings.get_setting("application/config/version", "?"))
+	return main.Updater.current()
 
 
 func _start_lobby(topics: Array) -> void:
@@ -292,8 +292,8 @@ func _on_offer(d: Dictionary) -> void:
 	if String(d.get("v", "")) != VERSION:
 		_lobby.publish(reply, {"t": "error", "msg": "The host has Earthworks %s and you have %s. Everyone needs the same version." % [game_version(), String(d.get("game", "an older one"))]})
 		return
-	if players.size() + _rtc.size() >= MAX_PLAYERS:
-		_lobby.publish(reply, {"t": "error", "msg": "That game is full (%d players)" % MAX_PLAYERS})
+	if _rtc.size() >= 16:  # (only so many half-made connections at once)
+		_lobby.publish(reply, {"t": "error", "msg": "The host is busy letting other players in: try again in a moment"})
 		return
 	var entry := _new_connection(from)
 	(multiplayer.multiplayer_peer as WebRTCMultiplayerPeer).add_peer(entry.conn, from)
@@ -483,8 +483,8 @@ func _on_peer_connected(id: int) -> void:
 	_joining_names.erase(id)
 	_send_snapshot(id)
 	_broadcast_players()
-	main.hud.toast("%s joined the game" % players[id].name, COLORS[color])
-	rpc("_rx_toast", "%s joined the game" % players[id].name, COLORS[color])
+	main.hud.toast("%s joined the game" % players[id].name, color_of(color))
+	rpc("_rx_toast", "%s joined the game" % players[id].name, color_of(color))
 
 
 func _on_peer_disconnected(id: int) -> void:
@@ -770,7 +770,7 @@ func _send_snapshot(peer: int) -> void:
 			trees.append([tid, forests.state[tid], known[0], known[1]])
 	var debris := []
 	for k in main.debris.size():
-		var b: Node3D = main.debris[k]
+		var b = main.debris[k]  # (untyped: a sold or cleared boulder is a freed instance)
 		if is_instance_valid(b):
 			debris.append([k, b.global_transform])
 	var loose := []
@@ -1086,7 +1086,7 @@ func _puppet_for(peer: int) -> Node3D:
 		p.camera = main.camera
 		main.add_child(p)
 		var info: Dictionary = players.get(peer, {"name": "Player", "color": 1})
-		p.make_puppet(String(info.name), COLORS[int(info.color) % COLORS.size()])
+		p.make_puppet(String(info.name), color_of(int(info.color)))
 		_puppets[peer] = p
 	return _puppets[peer]
 
@@ -1117,4 +1117,11 @@ func _process(_delta: float) -> void:
 
 
 func player_color(peer: int) -> Color:
-	return COLORS[int(players[peer].color) % COLORS.size()] if players.has(peer) else Color.WHITE
+	return color_of(int(players[peer].color)) if players.has(peer) else Color.WHITE
+
+
+## Player colours: the first four picked by hand, then evenly spread hues.
+static func color_of(index: int) -> Color:
+	if index < COLORS.size():
+		return COLORS[index]
+	return Color.from_hsv(fposmod(0.13 + index * 0.618034, 1.0), 0.6, 1.0)

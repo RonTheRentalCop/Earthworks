@@ -120,8 +120,8 @@ var _joint_velocity := Vector2.ZERO  # lift, pitch
 var _visual: Node3D
 var _arms: Node3D
 var _blade: Node3D
-## Grinder (mulcher) drum on the front of the blade: switched on, it grinds up standing
-## trees, stumps, logs and loose stumps it reaches, paid for on the spot.
+## Stump grinder drum on the front of the blade: switched on, it grinds up the stumps it
+## reaches (left standing or lying loose), paid for on the spot.
 var grinder := false
 var _grinder: Node3D
 var _grind_timer := 0.0
@@ -240,15 +240,17 @@ func _sink_in(delta: float) -> void:
 	if _sink_timer > 0.0:
 		return
 	_sink_timer = 0.5
-	var mud := terrain.mud_at(global_position.x, global_position.z)
+	var mud := terrain.mud_depth(global_position.x, global_position.z)
 	if mud < 0.3:
 		bog = move_toward(bog, 0.0, 0.5 * 0.4)
 		return
 	# Standing still the weight presses the tracks deeper; driving they slowly climb out.
-	if absf(_speed) < 0.2:
-		bog = minf(bog + 0.5 * 0.025 * mud, 0.55 * mud)
-	else:
+	if absf(_speed) >= 0.2:
 		bog = maxf(bog - 0.5 * 0.03, 0.0)
+	elif absf(_axis("drive_back", "drive_forward")) > 0.3:
+		bog = maxf(bog - 0.5 * 0.012, 0.0)  # rocking on the tracks slowly works it free
+	else:
+		bog = minf(bog + 0.5 * 0.025 * mud, 0.55 * mud)
 	if winch.is_attached() and winch.tension > 1000.0:
 		bog = maxf(bog - 0.5 * 0.1, 0.0)
 	var press := 0.004 * mud * (2.0 if absf(_speed) < 0.2 else 1.0)
@@ -260,7 +262,10 @@ func _sink_in(delta: float) -> void:
 func _sunk_factor() -> float:
 	if _platform != null:
 		return 1.0
-	return 1.0 - clampf((bog - 0.15) / 0.5, 0.0, 0.65)
+	var factor := 1.0 - clampf((bog - 0.15) / 0.5, 0.0, 0.65)
+	# Sunk past the belly pans (deep swamp mud, left standing): stuck fast. Keep moving
+	# through deep mud, or winch it out.
+	return factor * lerpf(1.0, 0.1, clampf((bog - 0.85) / 0.3, 0.0, 1.0))
 
 
 ## The tracks press ruts as the machine travels or turns.
@@ -394,8 +399,8 @@ func _axis(negative: StringName, positive: StringName) -> float:
 
 
 func _drive(delta: float) -> void:
-	var mud := terrain.mud_at(global_position.x, global_position.z)
-	var top := MAX_SPEED * (1.0 - MUD_SLOW * mud) * (1.0 - LOAD_DRAG * blade_load / capacity) * _sunk_factor()
+	var mud := terrain.mud_depth(global_position.x, global_position.z)
+	var top := MAX_SPEED * (1.0 - MUD_SLOW * minf(mud, 1.0)) * (1.0 - LOAD_DRAG * blade_load / capacity) * _sunk_factor()
 	if ripping:
 		top *= 1.0 - RIP_DRAG
 	# Climbing slows it, descending lets it run on (pitch > 0 = nose up).
@@ -408,7 +413,7 @@ func _drive(delta: float) -> void:
 		rate *= 0.18  # the tracks spin on ice: slow to get going, slow to stop
 	_speed = move_toward(_speed, target, rate * delta)
 	# Steering has inertia, and a full blade (dragging on the ground) resists pivoting.
-	var wanted_turn := _axis("turn_right", "turn_left") * TURN_RATE * (1.0 - 0.4 * mud) * (1.0 - 0.35 * blade_load / capacity)
+	var wanted_turn := _axis("turn_right", "turn_left") * TURN_RATE * (1.0 - 0.4 * minf(mud, 1.0)) * (1.0 - 0.35 * blade_load / capacity)
 	_turn = move_toward(_turn, wanted_turn * (0.6 if on_ice else 1.0), TURN_ACCEL * (0.3 if on_ice else 1.0) * delta)
 	rotate_y(_turn * delta)
 	_track_travel += Vector2(_speed - _turn * _th.y, _speed + _turn * _th.y) * delta
@@ -468,7 +473,7 @@ func _follow_ground(delta: float, instant: bool) -> void:
 	var roll := atan2(rest[1].x - rest[0].x, 2.0 * _th.y)
 	_ground_pitch = pitch
 	_ground_roll = roll
-	var target := height - (0.0 if _platform != null else MUD_SINK * terrain.mud_at(p.x, p.z) + bog)
+	var target := height - (0.0 if _platform != null else MUD_SINK * terrain.mud_depth(p.x, p.z) + bog)
 	if instant:
 		global_position.y = target
 		_vy = 0.0
@@ -572,6 +577,9 @@ func _doze(delta: float) -> float:
 	if reference - tracks > PIT_DEPTH:
 		reference = tracks
 	var edge := reference + _edge_offset()
+	# Never below where the blade really is: up on a pile, a trailer or a ridge the natural
+	# ground is far below, and grading to it cut soil the blade wasn't touching.
+	edge = maxf(edge, left.lerp(right, 0.5).y)
 	# Tilting the blade raises one end and drops the other.
 	left.y = edge - sin(_tilt) * half_edge * size
 	right.y = edge + sin(_tilt) * half_edge * size
@@ -646,7 +654,7 @@ func _rip(delta: float) -> void:
 func toggle_grinder() -> String:
 	grinder = not grinder
 	_show_grinder()
-	return "Grinder ON  ·  drive into trees, stumps and logs to grind them for cash" if grinder else "Grinder OFF"
+	return "Stump grinder ON  ·  drive over stumps to grind them for cash" if grinder else "Stump grinder OFF"
 
 
 ## The middle of the grinder drum (world space) and how far round it it grinds.

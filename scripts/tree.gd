@@ -17,6 +17,8 @@ const STUMP_HEIGHT := 0.45
 const LOG_LENGTH := 4.6  # a felled trunk, per unit of tree size
 const LOG_RADIUS := 0.27
 const WOOD_DENSITY := 650.0  # kg for a size-1 log; heavier with the cube of size
+const TREE_HEIGHT := 6.0  # m, a size-1 tree to the top of its crown
+const STUD := 0.28  # m: trees and logs are measured in studs
 
 static var _stump_mesh: ArrayMesh
 static var _log_mesh: ArrayMesh
@@ -27,6 +29,7 @@ var is_stump := false
 ## Stable id in the forest manager, and how much its wood is worth (old giants, swamp cypress).
 var tid := -1
 var value_mult := 1.0
+var species_name := "tree"
 ## Colour of its leaves (they shower off when it falls).
 var leaf_color := Color(0.25, 0.45, 0.22)
 ## Drawn by the forest's batched meshes instead of its own (the node is just the physics).
@@ -89,7 +92,7 @@ func fell(push: Vector3) -> RigidBody3D:
 	if push.length() < 0.01:
 		push = Vector3.FORWARD
 	push = push.normalized()
-	var fallen := make_log(get_parent(), global_transform.translated(Vector3(0, 0.05, 0)), size, trunk_mesh, value_mult)
+	var fallen := make_log(get_parent(), global_transform.translated(Vector3(0, 0.05, 0)), size, trunk_mesh, value_mult, species_name)
 	# Tip it over (a nudge in proportion to its weight; gravity does the rest), and the
 	# crown's leaves shower off as it goes.
 	fallen.angular_velocity = Vector3.UP.cross(push) * 0.7
@@ -123,7 +126,21 @@ func become_stump() -> void:
 
 ## A felled log as a physics body: the bare trunk (its leaves came off as it fell),
 ## weighing what a trunk that size would, worth more for big or rare trees.
-static func make_log(parent: Node, xform: Transform3D, log_size: float, _mesh: Mesh, mult := 1.0) -> RigidBody3D:
+## What wood is worth: grows with the square of the tree's size, times the species'
+## multiplier (5x for a golden oak).
+static func log_value(tree_size: float, mult: float) -> int:
+	return int((60.0 + 230.0 * tree_size * tree_size) * mult)
+
+
+static func stump_value(tree_size: float, mult: float) -> int:
+	return int((40.0 + 70.0 * tree_size * tree_size) * mult)
+
+
+static func studs(metres: float) -> int:
+	return roundi(metres / STUD)
+
+
+static func make_log(parent: Node, xform: Transform3D, log_size: float, _mesh: Mesh, mult := 1.0, species := "") -> RigidBody3D:
 	var fallen := RigidBody3D.new()
 	fallen.mass = WOOD_DENSITY * log_size * log_size * log_size
 	fallen.collision_layer = DEBRIS_LAYER
@@ -145,8 +162,16 @@ static func make_log(parent: Node, xform: Transform3D, log_size: float, _mesh: M
 	fallen.add_child(visual)
 	fallen.add_to_group("winchable")
 	fallen.add_to_group("shreddable")
-	fallen.set_meta("label", "log" if mult < 1.5 else "prized log")
-	fallen.set_meta("value", int((140.0 + 180.0 * log_size) * mult))
+	fallen.set_meta("label", "golden log" if mult >= 5.0 else ("prized log" if mult >= 1.5 else "log"))
+	fallen.set_meta("value", log_value(log_size, mult))
+	fallen.set_meta("species", species)
+	fallen.set_meta("studs", studs(LOG_LENGTH * log_size))
+	if mult >= 5.0:
+		var gold := StandardMaterial3D.new()
+		gold.albedo_color = Color(1.0, 0.78, 0.25)
+		gold.metallic = 0.7
+		gold.roughness = 0.35
+		visual.material_override = gold
 	# Where a grapple can take hold: anywhere along the trunk (local end points).
 	fallen.set_meta("grip", [Vector3(0, STUMP_HEIGHT * log_size, 0), Vector3(0, (STUMP_HEIGHT + LOG_LENGTH) * log_size, 0)])
 	parent.add_child(fallen)
@@ -252,7 +277,7 @@ static func shed_leaves(parent: Node, at: Vector3, tree_size: float, color: Colo
 
 
 ## A torn-out stump as a physics body.
-static func make_stump(parent: Node, xform: Transform3D, stump_size: float, mult := 1.0) -> RigidBody3D:
+static func make_stump(parent: Node, xform: Transform3D, stump_size: float, mult := 1.0, species := "") -> RigidBody3D:
 	var loose := RigidBody3D.new()
 	loose.mass = 120.0 * stump_size
 	loose.collision_layer = DEBRIS_LAYER
@@ -271,7 +296,8 @@ static func make_stump(parent: Node, xform: Transform3D, stump_size: float, mult
 	loose.add_to_group("winchable")
 	loose.add_to_group("shreddable")
 	loose.set_meta("label", "stump")
-	loose.set_meta("value", int((80.0 + 90.0 * stump_size) * mult))
+	loose.set_meta("value", stump_value(stump_size, mult))
+	loose.set_meta("species", species)
 	loose.set_meta("grip", [shape.position, shape.position])
 	parent.add_child(loose)
 	loose.global_transform = xform
@@ -293,7 +319,7 @@ func check_roots(terrain: Node) -> void:
 
 ## Tears the stump out of the ground (a grapple can do this without digging) and returns it.
 func pull_out() -> RigidBody3D:
-	var loose := make_stump(get_parent(), global_transform.translated(Vector3(0, 0.15, 0)), size, value_mult)
+	var loose := make_stump(get_parent(), global_transform.translated(Vector3(0, 0.15, 0)), size, value_mult, species_name)
 	loose.apply_central_impulse(Vector3(0, 300.0, 0))
 	body_spawned.emit(self, loose, "stump")
 	stump_freed.emit(self)

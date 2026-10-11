@@ -29,26 +29,37 @@ const TRAILER_BAYS: Array[Vector2] = [Vector2(22, -19.5), Vector2(22, -23.2)]
 static var _materials := {}
 
 
+## A pine: a tapered trunk with a root flare and six jittered tiers of needles in two
+## shades (lighter towards the tip).
 static func pine_mesh(foliage: Color) -> ArrayMesh:
 	var trunk := CylinderMesh.new()
-	trunk.top_radius = 0.14
-	trunk.bottom_radius = 0.24
-	trunk.height = 1.6
+	trunk.top_radius = 0.1
+	trunk.bottom_radius = 0.25
+	trunk.height = 2.4
 	trunk.radial_segments = 8
-	var cones: Array = []
-	for c in [[1.5, 2.4, 2.1], [1.15, 2.1, 3.4], [0.8, 1.8, 4.6], [0.45, 1.3, 5.6]]:
+	var flare := CylinderMesh.new()
+	flare.top_radius = 0.22
+	flare.bottom_radius = 0.42
+	flare.height = 0.35
+	flare.radial_segments = 8
+	var dark: Array = []
+	var light: Array = []
+	var tiers := [[1.7, 1.9, 1.7], [1.45, 1.8, 2.55], [1.2, 1.7, 3.35], [0.95, 1.5, 4.1], [0.7, 1.3, 4.8], [0.42, 1.1, 5.45]]
+	for k in tiers.size():
+		var c: Array = tiers[k]
 		var cone := CylinderMesh.new()
 		cone.top_radius = 0.0
 		cone.bottom_radius = c[0]
 		cone.height = c[1]
-		cone.radial_segments = 12
+		cone.radial_segments = 9
 		cone.rings = 1
-		cones.append([cone, Vector3(0, c[2], 0)])
+		var jitter := Vector3(sin(k * 2.3) * 0.08, 0.0, cos(k * 1.7) * 0.08)
+		(light if k >= 3 else dark).append([cone, Basis(Vector3.UP, k * 0.7), Vector3(0, c[2], 0) + jitter])
 	var mesh := ArrayMesh.new()
-	_merge_surface(mesh, [[trunk, Vector3(0, 0.8, 0)]], Color(0.4, 0.26, 0.16))
-	_merge_surface(mesh, cones, foliage)
+	_merge_surface(mesh, [[trunk, Vector3(0, 1.2, 0)], [flare, Vector3(0, 0.17, 0)]], Color(0.4, 0.26, 0.16))
+	_merge_surface_turned(mesh, dark, foliage.darkened(0.08))
+	_merge_surface_turned(mesh, light, foliage.lightened(0.1))
 	return Kit.flatten_plain(mesh)
-
 
 ## A pine in the snow: the same tiers, each carrying a white cap of snow.
 static func snowy_pine_mesh(foliage: Color) -> ArrayMesh:
@@ -126,74 +137,130 @@ static func _merge_surface_turned(mesh: ArrayMesh, parts: Array, color: Color) -
 	mesh.surface_set_material(mesh.get_surface_count() - 1, material)
 
 
+## A broadleaf: a trunk that forks into limbs under a full, lumpy crown in two shades.
 static func broadleaf_mesh(foliage: Color) -> ArrayMesh:
-	var trunk := CylinderMesh.new()
-	trunk.top_radius = 0.16
-	trunk.bottom_radius = 0.26
-	trunk.height = 2.6
-	trunk.radial_segments = 8
-	var blobs: Array = []
-	for b in [[1.6, Vector3(0, 3.6, 0)], [1.1, Vector3(0.9, 3.2, 0.3)], [1.0, Vector3(-0.8, 3.4, -0.4)], [0.9, Vector3(0.1, 4.6, 0.2)]]:
-		var blob := SphereMesh.new()
-		blob.radius = b[0]
-		blob.height = b[0] * 1.7
-		blob.radial_segments = 10
-		blob.rings = 5
-		blobs.append([blob, b[1]])
-	var mesh := ArrayMesh.new()
-	_merge_surface(mesh, [[trunk, Vector3(0, 1.3, 0)]], Color(0.42, 0.28, 0.17))
-	_merge_surface(mesh, blobs, foliage)
-	return Kit.flatten_plain(mesh)
-
+	return _crowned_tree(foliage, Color(0.42, 0.28, 0.17), 1.0, [
+		[1.5, Vector3(0, 3.7, 0)], [1.15, Vector3(1.0, 3.3, 0.35)], [1.05, Vector3(-0.9, 3.45, -0.45)],
+		[1.0, Vector3(0.35, 3.25, -1.0)], [0.95, Vector3(-0.4, 3.3, 0.95)], [0.95, Vector3(0.15, 4.55, 0.2)],
+		[0.7, Vector3(0.75, 4.3, -0.4)], [0.7, Vector3(-0.7, 4.2, 0.45)]])
 
 ## Swamp cypress: a tall, buttressed grey trunk with flat, layered olive crowns.
 static func cypress_mesh() -> ArrayMesh:
 	var trunk := CylinderMesh.new()
-	trunk.top_radius = 0.16
+	trunk.top_radius = 0.14
 	trunk.bottom_radius = 0.42
-	trunk.height = 4.2
+	trunk.height = 4.6
 	trunk.radial_segments = 9
 	var flare := CylinderMesh.new()
 	flare.top_radius = 0.3
-	flare.bottom_radius = 0.75
-	flare.height = 0.8
+	flare.bottom_radius = 0.8
+	flare.height = 0.9
 	flare.radial_segments = 9
-	var layers: Array = []
-	for c in [[1.7, 0.55, 3.0], [1.5, 0.5, 3.9], [1.2, 0.45, 4.7], [0.8, 0.4, 5.4]]:
+	var dark: Array = []
+	var light: Array = []
+	var layers := [[1.8, 0.5, 2.8], [1.6, 0.48, 3.5], [1.45, 0.45, 4.15], [1.2, 0.42, 4.75], [0.95, 0.4, 5.3], [0.6, 0.38, 5.8]]
+	for k in layers.size():
+		var c: Array = layers[k]
 		var disc := CylinderMesh.new()
-		disc.top_radius = c[0] * 0.75
+		disc.top_radius = c[0] * 0.7
 		disc.bottom_radius = c[0]
 		disc.height = c[1]
-		disc.radial_segments = 10
+		disc.radial_segments = 9
 		disc.rings = 1
-		layers.append([disc, Vector3(0, c[2], 0)])
+		(light if k >= 3 else dark).append([disc, Basis(Vector3.UP, k * 0.6), Vector3(sin(k * 1.9) * 0.15, c[2], cos(k * 2.4) * 0.15)])
 	var mesh := ArrayMesh.new()
-	_merge_surface(mesh, [[trunk, Vector3(0, 2.1, 0)], [flare, Vector3(0, 0.4, 0)]], Color(0.48, 0.44, 0.38))
-	_merge_surface(mesh, layers, Color(0.36, 0.42, 0.24))
+	_merge_surface(mesh, [[trunk, Vector3(0, 2.3, 0)], [flare, Vector3(0, 0.45, 0)]], Color(0.48, 0.44, 0.38))
+	_merge_surface_turned(mesh, dark, Color(0.32, 0.38, 0.21))
+	_merge_surface_turned(mesh, light, Color(0.4, 0.46, 0.26))
+	return Kit.flatten_plain(mesh)
+
+## Giant oak: a thick, flared trunk, heavy limbs and a wide, lumpy crown.
+static func oak_mesh() -> ArrayMesh:
+	return _crowned_tree(Color(0.3, 0.45, 0.2), Color(0.36, 0.26, 0.17), 1.45, [
+		[1.9, Vector3(0, 4.1, 0)], [1.5, Vector3(1.5, 3.7, 0.4)], [1.4, Vector3(-1.4, 3.8, -0.5)],
+		[1.35, Vector3(0.3, 3.6, 1.5)], [1.25, Vector3(-0.2, 3.6, -1.6)], [1.2, Vector3(0.1, 5.2, 0.2)],
+		[1.0, Vector3(1.1, 4.8, -0.9)], [1.0, Vector3(-1.1, 4.7, 0.9)], [0.9, Vector3(1.6, 4.4, 1.2)]])
+
+
+## Golden oak: rare, worth five times an ordinary tree. Gold leaves on a pale trunk.
+static func golden_mesh() -> ArrayMesh:
+	return _crowned_tree(Color(1.0, 0.8, 0.18), Color(0.62, 0.5, 0.36), 1.2, [
+		[1.6, Vector3(0, 3.9, 0)], [1.25, Vector3(1.2, 3.5, 0.3)], [1.2, Vector3(-1.1, 3.6, -0.4)],
+		[1.1, Vector3(0.3, 3.4, 1.2)], [1.05, Vector3(-0.2, 3.5, -1.2)], [1.0, Vector3(0.1, 4.9, 0.2)],
+		[0.8, Vector3(0.9, 4.6, -0.6)], [0.8, Vector3(-0.8, 4.5, 0.7)]])
+
+
+## Ancient redwood: very tall, a thick red trunk bare to well up, then a narrow spire.
+static func redwood_mesh() -> ArrayMesh:
+	var trunk := CylinderMesh.new()
+	trunk.top_radius = 0.16
+	trunk.bottom_radius = 0.5
+	trunk.height = 8.0
+	trunk.radial_segments = 10
+	var flare := CylinderMesh.new()
+	flare.top_radius = 0.45
+	flare.bottom_radius = 0.85
+	flare.height = 0.6
+	flare.radial_segments = 10
+	var dark: Array = []
+	var light: Array = []
+	for k in 7:
+		var cone := CylinderMesh.new()
+		cone.top_radius = 0.0
+		cone.bottom_radius = 1.5 - k * 0.17
+		cone.height = 1.6 - k * 0.08
+		cone.radial_segments = 9
+		cone.rings = 1
+		(light if k >= 4 else dark).append([cone, Basis(Vector3.UP, k * 0.9), Vector3(sin(k * 2.1) * 0.06, 4.6 + k * 0.75, cos(k * 1.3) * 0.06)])
+	var mesh := ArrayMesh.new()
+	_merge_surface(mesh, [[trunk, Vector3(0, 4.0, 0)], [flare, Vector3(0, 0.3, 0)]], Color(0.52, 0.24, 0.15))
+	_merge_surface_turned(mesh, dark, Color(0.16, 0.34, 0.18))
+	_merge_surface_turned(mesh, light, Color(0.22, 0.42, 0.22))
 	return Kit.flatten_plain(mesh)
 
 
-## Giant oak: a thick, short trunk and a wide, lumpy crown.
-static func oak_mesh() -> ArrayMesh:
+## A crowned tree: flared trunk, limbs reaching up into the crown, and blobs of leaves
+## (the higher ones a lighter shade). `girth` thickens the trunk and limbs.
+static func _crowned_tree(foliage: Color, bark: Color, girth: float, blobs: Array) -> ArrayMesh:
 	var trunk := CylinderMesh.new()
-	trunk.top_radius = 0.32
-	trunk.bottom_radius = 0.5
+	trunk.top_radius = 0.14 * girth
+	trunk.bottom_radius = 0.26 * girth
 	trunk.height = 3.0
-	trunk.radial_segments = 10
-	var blobs: Array = []
-	for b in [[2.0, Vector3(0, 4.0, 0)], [1.5, Vector3(1.4, 3.6, 0.4)], [1.4, Vector3(-1.3, 3.7, -0.5)],
-			[1.3, Vector3(0.3, 3.6, 1.4)], [1.2, Vector3(-0.2, 3.5, -1.5)], [1.2, Vector3(0.1, 5.1, 0.2)]]:
+	trunk.radial_segments = 9
+	var flare := CylinderMesh.new()
+	flare.top_radius = 0.24 * girth
+	flare.bottom_radius = 0.45 * girth
+	flare.height = 0.4
+	flare.radial_segments = 9
+	var limbs: Array = []
+	for k in 4:
+		var limb := CylinderMesh.new()
+		limb.top_radius = 0.04 * girth
+		limb.bottom_radius = 0.1 * girth
+		limb.height = 1.5
+		limb.radial_segments = 6
+		var around := Basis(Vector3.UP, k * 1.57 + 0.4)
+		var tilt := Basis(Vector3.RIGHT, 0.7)
+		var base := Vector3(0, 2.2 + k * 0.2, 0)
+		limbs.append([limb, around * tilt, base + around * tilt * Vector3(0, 0.75, 0)])
+	var low: Array = []
+	var high: Array = []
+	var top := 0.0
+	for b in blobs:
+		top = maxf(top, (b[1] as Vector3).y)
+	for b in blobs:
 		var blob := SphereMesh.new()
 		blob.radius = b[0]
 		blob.height = b[0] * 1.6
-		blob.radial_segments = 10
+		blob.radial_segments = 9
 		blob.rings = 5
-		blobs.append([blob, b[1]])
+		(high if (b[1] as Vector3).y > top - 0.9 else low).append([blob, b[1]])
 	var mesh := ArrayMesh.new()
-	_merge_surface(mesh, [[trunk, Vector3(0, 1.5, 0)]], Color(0.36, 0.26, 0.17))
-	_merge_surface(mesh, blobs, Color(0.3, 0.45, 0.2))
+	_merge_surface(mesh, [[trunk, Vector3(0, 1.5, 0)], [flare, Vector3(0, 0.2, 0)]], bark)
+	_merge_surface_turned(mesh, limbs, bark)
+	_merge_surface(mesh, low, foliage.darkened(0.08))
+	_merge_surface(mesh, high, foliage.lightened(0.12))
 	return Kit.flatten_plain(mesh)
-
 
 ## Scatters destructible trees in a circle, skipping spots `avoid(Vector2)` rejects.
 static func spawn_forest(parent: Node3D, terrain: Terrain, center: Vector2, radius: float, count: int,

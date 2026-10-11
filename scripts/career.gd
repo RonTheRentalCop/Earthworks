@@ -29,6 +29,10 @@ const MACHINES := [
 		"blurb": "Tip soil in the hopper: the belt carries it away.", "stats": ["28 m folding belt", "8 m³ hopper", "Raise · fold · drive"]},
 	{"id": "roller", "name": "Roller", "price": 16000, "kind": "roller",
 		"blurb": "Set a level, switch it on: grades the ground flat.", "stats": ["2.2 m drum", "Cuts and fills to level", "Rolls it firm"]},
+	{"id": "roller_xl", "name": "Big roller", "price": 34000, "kind": "roller_xl",
+		"blurb": "A huge drum: levels big pads in a few passes.", "stats": ["3.5 m drum", "Cuts and fills to level", "Rolls it firm"]},
+	{"id": "dump_xl", "name": "Big dump truck", "price": 40000, "kind": "dump_xl",
+		"blurb": "1.5x dump truck: three loads in one.", "stats": ["24 m³ body", "38 km/h", "Tow hitch"]},
 	{"id": "mobile_shredder", "name": "Portable shredder", "price": 22000, "kind": "mobile_shredder",
 		"blurb": "Tracked shredder: take it to the logs, feed it, get paid.", "stats": ["Infeed at the back", "Logs and stumps", "Pays on the spot"]},
 	{"id": "dump", "name": "Dump truck", "price": 0, "kind": "dump",
@@ -63,6 +67,7 @@ const TOOLS := [
 	{"id": "trench", "name": "Trench bucket", "price": 3500, "attachment": 2, "blurb": "Narrow 1.5 m³ bucket for trenches."},
 	{"id": "big_bucket", "name": "Bulk bucket", "price": 9000, "attachment": 1, "blurb": "6.5 m³ for fast truck loading."},
 	{"id": "grapple", "name": "Tree grapple", "price": 7500, "attachment": 3, "blurb": "Fells trees, pulls stumps, lifts logs."},
+	{"id": "saw", "name": "Trench saw", "price": 11000, "attachment": 4, "blurb": "Chain-saw bar: drag it along to slice deep, narrow trenches."},
 ]
 
 ## Consumables: bought as often as you like and delivered to the depot.

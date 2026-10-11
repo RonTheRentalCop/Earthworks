@@ -35,6 +35,8 @@ var remote := false
 var remote_axes := {}
 var puppet := false
 var machine_name := "Roller"
+## 1 = the standard roller; the big roller is built larger (set before adding).
+var size := 1.0
 var cab: Node3D
 var eye: Node3D
 var seat: Node3D
@@ -62,15 +64,16 @@ func _ready() -> void:
 	collision_mask = SOLID_MASK
 	motion_mode = CharacterBody3D.MOTION_MODE_FLOATING
 	_build_model()
+	_visual.scale = Vector3.ONE * size
 	Kit.merge_tree(_visual)
 	if preview:
 		set_physics_process(false)
 		return
 	var shape := CollisionShape3D.new()
 	var box := BoxShape3D.new()
-	box.size = Vector3(2.5, 2.0, 5.2)
+	box.size = Vector3(2.5, 2.0, 5.2) * size
 	shape.shape = box
-	shape.position = Vector3(0, 1.2, 0)
+	shape.position = Vector3(0, 1.2, 0) * size
 	add_child(shape)
 	add_to_group("winchable")
 	add_to_group("vehicles")
@@ -116,15 +119,15 @@ func _drive(delta: float) -> void:
 
 ## Sits it on the ground under the drum and rear wheels, tilted to match.
 func _follow_ground(delta: float, instant: bool) -> void:
-	var fwd := -global_basis.z * FOOTPRINT.x
-	var side := global_basis.x * FOOTPRINT.y
+	var fwd := -global_basis.z * FOOTPRINT.x * size
+	var side := global_basis.x * FOOTPRINT.y * size
 	var p := global_position
 	var fl := terrain.get_height((p + fwd - side).x, (p + fwd - side).z)
 	var fr := terrain.get_height((p + fwd + side).x, (p + fwd + side).z)
 	var bl := terrain.get_height((p - fwd - side).x, (p - fwd - side).z)
 	var br := terrain.get_height((p - fwd + side).x, (p - fwd + side).z)
-	var pitch := atan2((fl + fr) - (bl + br), 4.0 * FOOTPRINT.x)
-	var roll := atan2((fr + br) - (fl + bl), 4.0 * FOOTPRINT.y)
+	var pitch := atan2((fl + fr) - (bl + br), 4.0 * FOOTPRINT.x * size)
+	var roll := atan2((fr + br) - (fl + bl), 4.0 * FOOTPRINT.y * size)
 	var t := 1.0 if instant else 1.0 - exp(-8.0 * delta)
 	var sink := MUD_SINK * terrain.mud_at(p.x, p.z)
 	global_position.y = lerpf(p.y, (fl + fr + bl + br) * 0.25 - sink, t)
@@ -136,7 +139,7 @@ func _follow_ground(delta: float, instant: bool) -> void:
 
 ## Where the drum meets the ground (world space).
 func drum_point() -> Vector3:
-	var at := to_global(Vector3(DRUM.x, 0.0, DRUM.z))
+	var at := to_global(Vector3(DRUM.x, 0.0, DRUM.z) * size)
 	at.y = terrain.get_height(at.x, at.z)
 	return at
 
@@ -172,7 +175,7 @@ func _grade(delta: float) -> void:
 	forward.y = 0.0
 	var at := drum_point()
 	# The drum's footprint plus a little ahead, so a moving drum grades its whole path.
-	var done: Vector2 = terrain.level_strip(at, forward.normalized(), 0.8 + absf(_speed) * GRADE_EVERY, DRUM_HALF_WIDTH, level, GRADE_RATE * GRADE_EVERY)
+	var done: Vector2 = terrain.level_strip(at, forward.normalized(), (0.8 + absf(_speed) * GRADE_EVERY) * size, DRUM_HALF_WIDTH * size, level, GRADE_RATE * GRADE_EVERY)
 	cut += done.x
 	filled += done.y
 
@@ -191,7 +194,7 @@ func place(xform: Transform3D) -> void:
 
 
 func door_position() -> Vector3:
-	return to_global(Vector3(-1.9, 0.0, 0.6))
+	return to_global(Vector3(-1.9, 0.0, 0.6) * size)
 
 
 func controls() -> Vector4:
@@ -249,9 +252,9 @@ func _puppet_step(delta: float) -> void:
 
 
 func _animate() -> void:
-	_drum.rotation.x = -_travel / DRUM_RADIUS
+	_drum.rotation.x = -_travel / (DRUM_RADIUS * size)
 	for w in _wheels:
-		w.rotation.x = -_travel / 0.75
+		w.rotation.x = -_travel / (0.75 * size)
 	_beacon.visible = levelling and fmod(Time.get_ticks_msec() * 0.002, 1.0) < 0.5
 
 

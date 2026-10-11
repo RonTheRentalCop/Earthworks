@@ -29,6 +29,7 @@ const Winch = preload("res://scripts/winch.gd")
 const Forests = preload("res://scripts/forests.gd")
 const Conveyor = preload("res://scripts/conveyor.gd")
 const Roller = preload("res://scripts/roller.gd")
+const Updater = preload("res://scripts/updater.gd")
 const MobileShredder = preload("res://scripts/mobile_shredder.gd")
 const Ties = preload("res://scripts/ties.gd")
 const Ores = preload("res://scripts/ores.gd")
@@ -54,6 +55,9 @@ const MUD_PITS: Array[Vector3] = [Vector3(44, 66, 9.0), Vector3(-44, 62, 8.0), V
 ## Big hills: (x, z, radius, height).
 const HILLS: Array[Vector4] = [Vector4(-90, 430, 70, 14), Vector4(390, 370, 55, 10), Vector4(-420, -250, 60, 12),
 	Vector4(130, -430, 70, 11), Vector4(440, 250, 45, 8), Vector4(-470, 330, 40, 9)]
+## Rock mountains: (x, z, radius, height). Bare rock above the lower slopes, a quarter as
+## fast to dig or doze as soil.
+const MOUNTAINS: Array[Vector4] = [Vector4(-440, -430, 95, 42), Vector4(450, -460, 100, 48), Vector4(-470, 40, 75, 34)]
 ## Lakes: (x, z, radius). The first is fed by the stream and drains into the river.
 const LAKES: Array[Vector3] = [Vector3(-72, -58, 24), Vector3(255, -80, 42), Vector3(-200, -400, 30)]
 ## Swamps: (x, z, radius) of soft, sinking ground and standing pools.
@@ -120,6 +124,9 @@ var sun: DirectionalLight3D
 var machines: Array = []
 var trailers: Array = []
 var shredders: Array = []
+var updater: Node
+var _wood_text := ""
+var _wood_timer := 0.0
 ## The starting fleet (and the test fleet), for the automated checks.
 var excavator: Excavator
 var dozer: Bulldozer
@@ -191,6 +198,17 @@ func _ready() -> void:
 	terrain.add_mound(Vector2(22, 44), 8.0, 3.0)
 	for hill in HILLS:
 		terrain.add_mound(Vector2(hill.x, hill.y), hill.z, hill.w)
+	# Rock mountains: a main peak with lesser crags round it, bare rock above the foothills.
+	var crag_rng := RandomNumberGenerator.new()
+	crag_rng.seed = 4242
+	for mountain in MOUNTAINS:
+		var mc := Vector2(mountain.x, mountain.y)
+		terrain.add_mound(mc, mountain.z, mountain.w * 0.75)
+		for k in 6:
+			var at := mc + Vector2.from_angle(k * TAU / 6.0 + crag_rng.randf() * 0.6) * mountain.z * crag_rng.randf_range(0.2, 0.45)
+			terrain.add_mound(at, mountain.z * crag_rng.randf_range(0.3, 0.45), mountain.w * crag_rng.randf_range(0.2, 0.35))
+		terrain.paint_rock(mc, mountain.z * 0.8)
+	terrain.deep_zones = SWAMPS
 	for pit in MUD_PITS:
 		terrain.add_mound(Vector2(pit.x, pit.y), pit.z, -0.5)
 	# Lakes: deep basins; each level sits just under the lowest point of its rim.
@@ -373,10 +391,8 @@ func _ready() -> void:
 	camera = FollowCamera.new()
 	camera.terrain = terrain
 	add_child(camera)
-	grass = Grass.new()
-	add_child(grass)
-	grass.setup(terrain, camera)
-	grass.add_meadow(Terrain.HALF_SIZE, Terrain.HALF_SIZE + 30.0, 110000, 0.0)
+	# (No grass blades: thousands of them cost too much frame rate. The ground's own
+	# grass colouring stays.)
 	terrain.focus = camera
 	water.focus = camera
 
@@ -457,6 +473,11 @@ func _ready() -> void:
 		_restoring = false
 	_update_anchors()
 	terrain.prepare_around(player.global_position)
+	# Checks GitHub for a newer version (exported builds) and downloads it in the background.
+	updater = Updater.new()
+	add_child(updater)
+	updater.update_ready.connect(func(version: String) -> void:
+		hud.toast("UPDATE %s DOWNLOADED  ·  pause menu → RESTART TO UPDATE (or just restart the game)" % version, Hud.GOOD))
 	print("Earthworks: %.0f m map, %d trees, %d blocks, %d job sites, built in %d ms" % [
 		Terrain.HALF_SIZE * 2.0, forests.count(), debris.size(), jobs.sites.size(), Time.get_ticks_msec() - started])
 	var pending := Net.pending
@@ -467,6 +488,14 @@ func _ready() -> void:
 		hud.toast(String(pending.toast), Hud.BAD)
 	elif not scripted:
 		hud.toast("Welcome to the depot  ·  press %s to hire machines and take jobs" % hud.key("menu"), Hud.ACCENT)
+	if "--clean-save" in OS.get_cmdline_user_args():
+		# Tidy a saved world from the command line: clear loose clutter, save, quit.
+		await get_tree().physics_frame
+		print("Earthworks: cleaned up %d things" % clean_up_site())
+		await get_tree().physics_frame
+		save_world()
+		get_tree().quit()
+		return
 	if "--host-online" in OS.get_cmdline_user_args():
 		var error := net.host_online(_arg_value("--name", "Host"), _arg_value("--code", ""))
 		print("Earthworks: hosting online, room code %s %s" % [net.room_code, error])
@@ -490,7 +519,8 @@ func apply_quality(q: int) -> void:
 	vp.msaa_3d = Viewport.MSAA_DISABLED if q == 0 else Viewport.MSAA_2X
 	vp.scaling_3d_mode = Viewport.SCALING_3D_MODE_FSR if q == 0 else Viewport.SCALING_3D_MODE_BILINEAR
 	vp.scaling_3d_scale = 0.77 if q == 0 else 1.0
-	grass.density_scale = [0.35, 0.65, 1.0][q]
+	if grass:
+		grass.density_scale = [0.35, 0.65, 1.0][q]
 
 
 # --- Multiplayer: starting and joining ------------------------------------------------------
@@ -804,9 +834,12 @@ func _create_vehicle(kind: String) -> Node3D:
 			ms.terrain = terrain
 			ms.shredded.connect(_on_shredded)
 			return ms
-		"roller":
+		"roller", "roller_xl":
 			var ro := Roller.new()
 			ro.terrain = terrain
+			if kind == "roller_xl":
+				ro.size = 1.6
+				ro.machine_name = "Big roller"
 			return ro
 		"conveyor":
 			var c := Conveyor.new()
@@ -1211,9 +1244,9 @@ func clean_up_site() -> int:
 	return gone.size()
 
 
-## A dozer's grinder: everything wooden within `reach` of `at` is ground up and paid for
-## at once: standing trees (log and stump), stumps left after felling, and loose logs and
-## stumps (not strapped, tied or held). Host only.
+## A dozer's grinder (a stump grinder): stumps within `reach` of `at` are ground up and
+## paid for at once: stumps left standing after felling, and loose stumps (not strapped,
+## tied or held). Standing trees and logs are left alone. Host only.
 func grind_at(at: Vector3, reach: float, by: Node3D) -> void:
 	if net.is_client():
 		return
@@ -1223,17 +1256,14 @@ func grind_at(at: Vector3, reach: float, by: Node3D) -> void:
 	var gone := []
 	for c in forests._cells_around(p, reach):
 		for tid in forests.cells[c]:
-			if forests.state[tid] >= 2:
-				continue
+			if forests.state[tid] != 1:
+				continue  # only felled trees' stumps
 			var tp: Vector3 = forests.pos[tid]
 			if Vector2(tp.x, tp.z).distance_to(p) > reach or absf(tp.y - at.y) > 3.0:
 				continue
 			# Fell it and pull the stump through the normal events (so joining players and
 			# the world save agree), then grind the pieces.
-			var wood := []
-			if forests.state[tid] == 0:
-				wood.append(forests.apply_event(tid, "fell", self))
-			wood.append(forests.apply_event(tid, "pulled", self))
+			var wood := [forests.apply_event(tid, "pulled", self)]
 			for b in wood:
 				if is_instance_valid(b):
 					value += int(b.get_meta("value", 150))
@@ -1243,7 +1273,7 @@ func grind_at(at: Vector3, reach: float, by: Node3D) -> void:
 			count += 1
 	for id in bodies.keys():
 		var b = bodies[id]
-		if not is_instance_valid(b) or not b.is_in_group("shreddable") or b.get_parent() != self or b.is_queued_for_deletion():
+		if not is_instance_valid(b) or b.get_meta("label", "") != "stump" or b.get_parent() != self or b.is_queued_for_deletion():
 			continue
 		if b.has_meta("strapped_to") or b.has_meta("tie_locked") or b.has_meta("shredding"):
 			continue
@@ -1258,7 +1288,7 @@ func grind_at(at: Vector3, reach: float, by: Node3D) -> void:
 	if count == 0:
 		return
 	net.send_removed(gone)
-	career.earn(value, "Ground up %d %s" % [count, "piece of wood" if count == 1 else "pieces of wood"])
+	career.earn(value, "Ground up %d stump%s" % [count, "" if count == 1 else "s"])
 
 
 ## Joining player: the host cleared these away.
@@ -1283,7 +1313,7 @@ func spawn_ore(kind: String, xform: Transform3D) -> RigidBody3D:
 
 func _on_shredded(value: int, label: String, _at: Vector3) -> void:
 	career.earn(value, ("Crushed " if label in Ores.KINDS.values().map(func(k): return k.name) else "Shredded ") + label)
-	if label == "log":
+	if label.ends_with("log"):
 		career.stats.logs = int(career.stats.logs) + 1
 		jobs.notify("logs")
 
@@ -1523,11 +1553,43 @@ func _process(delta: float) -> void:
 	elif nearest:
 		hud.set_prompt("interact", ("DRIVE THE " if not nearest.get("broken") else "CLIMB INTO THE ") + String(nearest.machine_name).to_upper())
 	else:
-		hud.set_prompt("", "")
+		hud.set_prompt("", _wood_here())
 	var target := jobs.target()
 	var from := focus_node().global_position
 	hud.set_job(jobs.active, Vector2(target.x, target.z).distance_to(Vector2(from.x, from.z)) if target != Vector3.INF else INF)
 	_rumble()
+
+
+## On foot next to a tree, log or stump: what it is, how big (in studs) and what it's worth.
+func _wood_here() -> String:
+	_wood_timer -= get_process_delta_time()
+	if _wood_timer > 0.0:
+		return _wood_text
+	_wood_timer = 0.25
+	_wood_text = ""
+	var p := player.global_position
+	var best_d := 3.0
+	for id in bodies:
+		var b = bodies[id]
+		if is_instance_valid(b) and b.is_in_group("shreddable") and b.is_inside_tree():
+			var d: float = b.global_position.distance_to(p)
+			if b.has_meta("grip"):
+				var g: Array = b.get_meta("grip")
+				var mid: Vector3 = b.to_global(((g[0] as Vector3) + (g[1] as Vector3)) * 0.5)
+				d = minf(d, mid.distance_to(p))
+			if d < best_d:
+				best_d = d
+				var kind := String(b.get_meta("species", ""))
+				var what := String(b.get_meta("label", "wood"))
+				var length := "  ·  %d studs long" % int(b.get_meta("studs")) if b.has_meta("studs") else ""
+				if kind != "":
+					what = kind + (" log" if what.ends_with("log") else " " + what)
+				_wood_text = "%s%s  ·  worth $%d" % [what.to_upper(), length, int(b.get_meta("value", 0))]
+	if _wood_text == "":
+		var tid := forests.nearest_tree(p, 3.5)
+		if tid >= 0:
+			_wood_text = forests.describe(tid)
+	return _wood_text
 
 
 ## Winch button for one driver: tap to hook the nearest thing, hold to reel in, tap again

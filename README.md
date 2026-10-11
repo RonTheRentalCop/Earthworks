@@ -55,7 +55,15 @@ cab view and climbing out.
   stumps into the striped infeed zone and they're shredded for cash. Swamp cypress logs pay about
   2.4× and giant oak about 3× an ordinary log ("prized log").
 
-## Multiplayer (up to 4 players)
+## Updates
+Downloaded builds (v0.2.9 and later) update themselves. On start the game checks the newest GitHub
+release; if it's newer, it downloads that release's small data pack (`Earthworks-Windows.pck` /
+`Earthworks-macOS.pck`) in the background, and the next start (or **pause menu → Restart to
+update**) runs the new version. An update that fails to start is skipped automatically. Running
+from the project folder never updates. A release that needs a new engine or plugin still means
+downloading the full zip once.
+
+## Multiplayer (no player limit)
 **Esc → Multiplayer.** One player presses **Host online** and gets a room code like `KX7P-M3QD`
 (shown in the pause menu too, with a COPY button); the others type it under **Join with code**.
 That's it: no port forwarding, no VPN, nothing to install. Everyone works for the same company:
@@ -142,12 +150,25 @@ the session; your own career is untouched.
   **Heavy recovery truck** (8x8 rotator wrecker, 450 kN winch, 60 m cable),
   **Site pickup** (fast 4x4). All have real wheel physics, a load that raises mass and centre of
   gravity, a handbrake, and mud that sinks the wheels.
+- **Big roller** ($34,000) and **big dump truck** ($40,000, 24 m³): 1.6x / 1.5x versions.
+- **Trench saw** (excavator tool, $11,000): a chain-saw bar that hangs from the stick. Lower it
+  into the ground and drag it to slice a narrow trench up to 3.2 m deep; the spoil is thrown out
+  beside it and the walls stand vertical.
+- **Trees:** sizes vary a lot and wood is worth more the bigger the tree (roughly with the square
+  of its size). Walk up to a tree, log or stump to see what it is, how big it is in studs and
+  what it's worth. Rare **ancient redwoods** (4x) and **golden oaks** (5x, golden logs) turn up
+  anywhere.
+- **Rock mountains:** three rocky peaks (west, south-west and south-east). Bare rock digs and
+  dozes at a quarter of the speed of soil and never slumps.
+- **Deep swamp mud:** mud in the swamps runs much deeper. Excavators and dozers can crawl through
+  if they keep moving, but left standing they sink and get stuck fast; rock them on the tracks
+  for a while or winch them out.
 - **Portable shredder** ($22,000): a tracked shredder you drive to where the trees are coming down.
   Drop, drag or push logs and stumps into the striped infeed at its back; they're shredded and
   paid for on the spot.
-- **Dozer grinder:** in any bulldozer press the tool button (N) to swing a grinder drum onto the
-  front of the blade. Drive into standing trees, stumps, logs and loose stumps and they're ground
-  up and paid for instantly. Raise the blade a little to drive freely.
+- **Dozer stump grinder:** in any bulldozer press the tool button (N) to swing a grinder drum onto
+  the front of the blade. Drive over stumps (left after felling, or lying loose) and they're
+  ground up and paid for instantly. Trees and logs are left alone.
 - **Wide flatbed trailer** ($16,000): a 14 m × 4.2 m deck on five axles with full-width ramps, for
   the big dozers and the mining excavator. Hitch it to the heavy haul tractor; raise the ramps to
   strap the load down.
