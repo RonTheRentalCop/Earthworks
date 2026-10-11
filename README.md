@@ -142,8 +142,11 @@ for the host's for the session; your own career is untouched.
   parked under the head. Drive it on its tracks, raise/lower the boom (boom controls) and fold/unfold
   its three sections (stick in / out): 9 m folded for driving, a 28 m reach unfolded. The belt only
   runs fully unfolded.
-- **Logging semi** (tipping log bunks on a fast tractor) and **Log trailers** (bunks and tall stakes;
-  the button at the back straps the load down). Trailers chain: back the last trailer's tail up to
+- **Logging semi**: a huge, stable rig (1.4x scale, five axles on a wide stance, low centre of
+  gravity) with a 10.6 m x 4.1 m bed of tall-staked tipping bunks; walk to the back and press F to
+  strap the load down (logs ride locked to the bed, even as it tips) or release it. The log truck
+  straps the same way. **Log trailers** (bunks and tall stakes; the button at the back straps the
+  load down). Trailers chain: back the last trailer's tail up to
   another trailer's drawbar and press the hitch button to add it to the train; with nothing behind,
   the hitch button drops the last one.
 - **Ratchet straps and rope** (on foot): a strap locks a log, stump, mat or block onto a truck,
@@ -215,6 +218,7 @@ every machine, the shredder, jobs, the protected depot, the log truck, dozer gra
 `bigmap_check` covers sinking in the swamp, ground mats, quarry gravel, prized logs and stumps
 streaming back in. `trees_check` fells every species and buries logs under dumped soil to check nothing
 ever ends up under the ground.
+`semi_check` loads the logging semi with 13 t of logs, straps them with F and drives hard;
 `logging_check` pulls two chained log trailers with a strapped load behind the logging semi;
 `ties_check` straps a log onto a truck with the keys, drags one on a rope and straps one to a tree.
 `ore_check` digs pits in three places and sells the best find at the crusher; `water_check`

@@ -961,7 +961,7 @@ func remote_request(peer: int, action: String, arg: Variant) -> void:
 				_use_utility(v, peer)
 		"ramps":
 			var t := vehicle_by_id(int(arg))
-			if t and t in trailers and net.players.has(peer):
+			if t and (t in trailers or t.get("variant") == "logs") and net.players.has(peer):
 				var puppet: Node3D = net._puppet_for(peer) if peer != 1 else player
 				if puppet.global_position.distance_to(t.ramp_point()) < 6.0:
 					t.toggle_ramps()
@@ -1342,8 +1342,8 @@ func _process(delta: float) -> void:
 				nearest = m
 		# On foot at the back of a trailer: work its ramps.
 		var ramp_best := 3.0 if nearest == null else minf(3.0, best)
-		for t in trailers:
-			var d := player.global_position.distance_to(t.ramp_point())
+		for t in trailers + machines.filter(func(m): return m.get("variant") == "logs"):
+			var d: float = player.global_position.distance_to(t.ramp_point())
 			if d < ramp_best:
 				ramp_best = d
 				at_ramps = t

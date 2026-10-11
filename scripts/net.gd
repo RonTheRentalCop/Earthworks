@@ -17,7 +17,7 @@ extends Node
 signal status_changed(text: String)
 signal players_changed
 
-const VERSION := "earthworks-net-5"  # bump whenever the messages change: mismatched games refuse politely
+const VERSION := "earthworks-net-6"  # bump whenever the messages change: mismatched games refuse politely
 const DEFAULT_PORT := 24680
 const MAX_PLAYERS := 4
 const STATE_INTERVAL := 0.05  # 20 updates a second

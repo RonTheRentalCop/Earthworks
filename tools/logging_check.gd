@@ -19,7 +19,7 @@ func _initialize() -> void:
 	var semi = main.spawn_vehicle("log_semi")
 	var a = main.spawn_vehicle("log_trailer")
 	var b = main.spawn_vehicle("log_trailer")
-	semi.place(Transform3D(Basis(Vector3.UP, PI), Vector3(0, t.get_height(0, 40) + 0.4, 40)))
+	semi.place(Transform3D(Basis(Vector3.UP, PI), Vector3(60, t.get_height(60, 130) + 0.6, 130)))
 	main.player.global_position = semi.door_position()
 	main._update_anchors()
 	await _frames(30)

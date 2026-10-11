@@ -66,12 +66,18 @@ const KINDS := {
 		"capacity": 0.0, "winch": [Vector3(0, 1.0, -3.6), 120000.0, 25.0], "hitch": Vector3(0, 0.85, 3.75), "com": 0.85,
 	},
 	"log_semi": {
-		"name": "Logging semi", "paint": Color(0.55, 0.1, 0.08), "mass": 12500.0, "engine": 44000.0,
-		"top": 17.0, "loaded_top": 15.0, "reverse": 4.0, "steer": 0.5, "grip": 3.3, "mud_grip": 0.6, "bog": 0.6,
-		"radius": 0.55, "width": 0.46, "wheel_y": 0.95, "rest": 0.35,
-		"axles": [[-2.3, 1.05, true, false, false], [1.5, 1.05, false, true, true], [2.7, 1.05, false, true, true]],
-		"capacity": 0.0, "log_bed": true, "bed_pivot": Vector3(0, 1.45, 3.0),
-		"winch": [Vector3(0, 1.0, -3.6), 120000.0, 25.0], "hitch": Vector3(0, 0.85, 3.75), "com": 0.9,
+		# A big, stable logging rig: 1.4x scale, a stretched chassis on five axles with a wide
+		# stance and a low centre of gravity, and a long, wide bed of tall-staked bunks.
+		# (Model units are scaled by "scale"; wheels are placed in body space.)
+		"name": "Logging semi", "paint": Color(0.55, 0.1, 0.08), "mass": 23000.0, "engine": 78000.0,
+		"top": 15.0, "loaded_top": 13.0, "reverse": 4.0, "steer": 0.42, "grip": 3.6, "mud_grip": 0.7, "bog": 0.5,
+		"radius": 0.64, "width": 0.52, "wheel_y": 1.3, "rest": 0.5, "travel": 0.5, "scale": 1.4, "roll": 0.06,
+		"axles": [[-3.22, 1.75, true, false, false], [2.1, 1.75, false, true, true], [3.78, 1.75, false, true, true],
+			[7.0, 1.75, false, false, true], [8.68, 1.75, false, false, true]],
+		"capacity": 0.0, "log_bed": true, "bed_pivot": Vector3(0, 1.45, 6.6),
+		"bed_length": 7.6, "bed_width": 2.9, "stake_height": 2.3,
+		"winch": [Vector3(0, 1.0, -3.6), 160000.0, 30.0], "hitch": Vector3(0, 0.85, 7.0), "com": 0.75,
+		"com_z": -3.2,  # mid-wheelbase: the long rear bogie carries its share
 	},
 	"logs": {
 		"name": "Log truck", "paint": Color(0.18, 0.45, 0.27), "mass": 10000.0, "engine": 26000.0,
@@ -136,6 +142,12 @@ var receivers: Array = []
 ## How far (m) the wheels have sunk into mud. Builds up while a heavy truck sits or
 ## crawls in mud, cuts the drive, and only clears on firm ground or under a winch.
 var bog := 0.0
+## Log trucks: walk to the back and press F to strap the load down (logs then ride locked
+## to the bed, even as it tips) or release it. Shares the trailers' interface: variant
+## "logs", ramps_down = not strapped, ramp_point(), toggle_ramps().
+var variant := ""
+var ramps_down := true
+var _strapped := {}  # node -> transform in bed space
 var mud_level := 0.0
 
 var _spec: Dictionary
@@ -167,6 +179,8 @@ func _ready() -> void:
 		kind = "recovery"
 	_spec = KINDS[kind]
 	recovery = kind == "recovery" or kind == "recovery_xl"
+	if _spec.has("log_bed"):
+		variant = "logs"
 	machine_name = "Broken-down truck" if broken else String(_spec.name)
 	_paint = _spec.paint
 	capacity = _spec.capacity
@@ -190,7 +204,7 @@ func _ready() -> void:
 	collision_layer = TRUCK_LAYER
 	collision_mask = TRUCK_MASK
 	center_of_mass_mode = RigidBody3D.CENTER_OF_MASS_MODE_CUSTOM
-	center_of_mass = Vector3(0, _spec.com, 0)
+	center_of_mass = Vector3(0, _spec.com, float(_spec.get("com_z", 0.0)))
 	can_sleep = false
 	_add_collisions()
 	if _spec.has("log_bed"):
@@ -269,6 +283,7 @@ func _physics_process(delta: float) -> void:
 	engine_force *= clampf(1.0 - bog * 1.2, 0.12, 1.0)
 	if _bed:
 		_operate_bed(delta)
+	_carry_straps()
 	_animate(delta, throttle)
 
 
@@ -422,6 +437,8 @@ func hud_info() -> Dictionary:
 		info.flags.append("NO ENGINE")
 	if stuck:
 		info.flags.append("STUCK")
+	if not ramps_down:
+		info.flags.append("LOAD STRAPPED (%d)" % _strapped.size())
 	if bog > 0.15:
 		info.flags.append("SUNK %.1f m" % bog)
 	return info
@@ -439,7 +456,7 @@ func _update_load() -> void:
 	var fill := payload / capacity if capacity > 0.0 else 0.0
 	mass = float(_spec.mass) + payload * SOIL_DENSITY
 	# A heaped body sits high: the centre of gravity climbs with the load.
-	center_of_mass = Vector3(0, float(_spec.com) + fill * _bed_height * 0.7, 0)
+	center_of_mass = Vector3(0, float(_spec.com) + fill * _bed_height * 0.7, float(_spec.get("com_z", 0.0)))
 	# The springs scale with mass by themselves, but their force limit doesn't: keep it in
 	# step with the load, or a full body bottoms the suspension out and the truck bucks.
 	for w in _wheels:
@@ -577,6 +594,81 @@ func _operate_bed(delta: float) -> void:
 	_update_hoist()
 
 
+## Where you stand to strap or release the load: the back of the bed.
+func ramp_point() -> Vector3:
+	return _bed.to_global(Vector3(0, 0.3, 0.6)) if _bed else global_position
+
+
+func toggle_ramps() -> void:
+	if variant != "logs":
+		return
+	ramps_down = not ramps_down
+	if ramps_down:
+		_release_straps()
+	else:
+		_strap_load()
+
+
+## Straps down whatever lies on the log bed (logs, stumps, mats, ore, rubble).
+func _strap_load() -> void:
+	var length: float = _spec.get("bed_length", 4.7)
+	var width: float = _spec.get("bed_width", 2.5)
+	var stake: float = _spec.get("stake_height", 1.7)
+	var inverse := _bed.global_transform.affine_inverse()
+	for node in get_tree().get_nodes_in_group("winchable"):
+		var b := node as RigidBody3D
+		if b == null or b is VehicleBody3D or b.freeze or b.has_meta("strapped_to") or not b.is_inside_tree():
+			continue
+		var local := _bed.to_local(b.global_position)
+		if absf(local.x) > width * 0.5 + 0.3 or local.z > 0.6 or local.z < -length - 0.4 or local.y < -0.6 or local.y > stake + 2.0:
+			continue
+		_strapped[b] = inverse * b.global_transform
+		b.set_meta("strapped_to", self)
+		b.set_meta("strap_freeze_mode", b.freeze_mode)
+		b.freeze_mode = RigidBody3D.FREEZE_MODE_KINEMATIC
+		b.freeze = true
+		b.add_collision_exception_with(self)
+
+
+func _carry_straps() -> void:
+	if _strapped.is_empty():
+		return
+	var bed := _bed.global_transform
+	for n in _strapped.keys():
+		if not is_instance_valid(n) or not (n as Node).is_inside_tree():
+			_strapped.erase(n)
+			continue
+		(n as Node3D).global_transform = bed * (_strapped[n] as Transform3D)
+
+
+func _release_straps() -> void:
+	for n in _strapped.keys():
+		if is_instance_valid(n):
+			_free_strap(n)
+			(n as RigidBody3D).linear_velocity = linear_velocity
+	_strapped.clear()
+
+
+## Takes one thing out of the straps (a grapple lifting a log off the bed).
+func unstrap(n: Node) -> void:
+	if _strapped.has(n):
+		_strapped.erase(n)
+		_free_strap(n)
+
+
+func _free_strap(n: Node) -> void:
+	var b := n as RigidBody3D
+	b.remove_meta("strapped_to")
+	b.freeze_mode = b.get_meta("strap_freeze_mode", RigidBody3D.FREEZE_MODE_STATIC)
+	b.remove_meta("strap_freeze_mode")
+	b.remove_collision_exception_with(self)
+	b.freeze = false
+
+
+func is_strapped(n: Node) -> bool:
+	return _strapped.has(n)
+
+
 ## Hoist ram from the chassis to the underside of the bed.
 func _update_hoist() -> void:
 	var pivot: Vector3 = _spec.bed_pivot
@@ -656,6 +748,9 @@ func _add_collisions() -> void:
 			boxes = [[Vector3(1.9, 0.6, 5.2), Vector3(0, 0.82, 0)], [Vector3(1.7, 0.7, 1.4), Vector3(0, 1.5, -0.25)]]
 		_:
 			boxes = [[Vector3(2.3, 0.9, 6.6), Vector3(0, 1.35, 0)], [Vector3(2.3, 1.5, 1.7), Vector3(0, 2.3, -2.5)]]
+	if kind == "log_semi":
+		var back: float = float(_spec.bed_pivot.z) + 0.6
+		boxes.append([Vector3(2.3, 0.6, back - 3.2), Vector3(0, 1.15, (3.2 + back) * 0.5)])
 	for b in boxes:
 		_shape(b[0], Transform3D(Basis.IDENTITY, b[1]))
 
@@ -677,14 +772,14 @@ func _add_wheel(pos: Vector3, steer: bool, drive: bool, dual: bool) -> void:
 	wheel.use_as_traction = drive
 	wheel.wheel_radius = _spec.radius
 	wheel.wheel_rest_length = _spec.rest
-	wheel.suspension_travel = 0.3 if kind != "pickup" else 0.22
+	wheel.suspension_travel = float(_spec.get("travel", 0.3 if kind != "pickup" else 0.22))
 	var weight: float = float(_spec.mass) / 9000.0
 	wheel.suspension_stiffness = 60.0 if kind != "pickup" else 45.0
 	wheel.suspension_max_force = 90000.0 * maxf(weight, 0.4)
 	wheel.damping_compression = 1.6
 	wheel.damping_relaxation = 2.2
 	wheel.wheel_friction_slip = _spec.grip
-	wheel.wheel_roll_influence = 0.2
+	wheel.wheel_roll_influence = float(_spec.get("roll", 0.2))
 	add_child(wheel)
 	var rim := Color(0.88, 0.88, 0.88) if kind != "adt" else Color(0.95, 0.66, 0.08)
 	Kit.wheel(wheel, _spec.radius, _spec.width if not dual else float(_spec.width) * 0.7, rim, 1.0 if pos.x > 0.0 else -1.0, dual)
@@ -713,6 +808,7 @@ func _build_model() -> void:
 				"haul": _build_haul()
 				"logs": _build_log_bed()
 				"log_semi":
+					_build_semi_chassis()
 					_build_log_bed()
 					_build_semi_stacks()
 	if _bed:
@@ -852,32 +948,39 @@ func _build_log_bed() -> void:
 	_bed = Node3D.new()
 	_bed.position = _spec.bed_pivot
 	_model.add_child(_bed)
-	var length := 4.7
-	for x in [-0.95, 0.95]:
+	var length: float = _spec.get("bed_length", 4.7)
+	var width: float = _spec.get("bed_width", 2.5)
+	var stake: float = _spec.get("stake_height", 1.7)
+	var half := width * 0.5
+	for x in [-width * 0.38, width * 0.38]:
 		Kit.box(_bed, Vector3(0.2, 0.22, length), Vector3(x, 0.0, -length * 0.5), steel, 0.03)
-	for k in 9:
-		Kit.box(_bed, Vector3(2.2, 0.08, 0.3), Vector3(0, 0.12, -0.2 - k * 0.53), Kit.matte(Color(0.45, 0.33, 0.22)), 0.01)
-	for z in [-0.35, -2.35, -4.35]:
-		Kit.box(_bed, Vector3(2.5, 0.2, 0.24), Vector3(0, 0.25, z), steel, 0.03)
-		for x in [-1.18, 1.18]:
-			Kit.box(_bed, Vector3(0.14, 1.7, 0.14), Vector3(x, 1.1, z), paint, 0.03)
-			Kit.box(_bed, Vector3(0.16, 0.16, 0.16), Vector3(x, 1.98, z), Kit.hazard(), 0.03)
+	var slats := int(length / 0.53)
+	for k in slats:
+		Kit.box(_bed, Vector3(width - 0.3, 0.08, 0.3), Vector3(0, 0.12, -0.2 - k * 0.53), Kit.matte(Color(0.45, 0.33, 0.22)), 0.01)
+	var bunks := maxi(3, int(round(length / 2.0)))
+	for k in bunks:
+		var z := -0.35 - k * (length - 0.7) / float(bunks - 1)
+		Kit.box(_bed, Vector3(width, 0.2, 0.24), Vector3(0, 0.25, z), steel, 0.03)
+		for x in [-half + 0.07, half - 0.07]:
+			Kit.box(_bed, Vector3(0.14, stake, 0.14), Vector3(x, stake * 0.5 + 0.25, z), paint, 0.03)
+			Kit.box(_bed, Vector3(0.16, 0.16, 0.16), Vector3(x, stake + 0.28, z), Kit.hazard(), 0.03)
 	# Headboard (log guard) of welded bars.
-	Kit.box(_bed, Vector3(2.5, 0.16, 0.16), Vector3(0, 0.3, -length), paint, 0.03)
-	Kit.box(_bed, Vector3(2.5, 0.16, 0.16), Vector3(0, 2.0, -length), paint, 0.03)
-	for k in 6:
-		Kit.box(_bed, Vector3(0.08, 1.7, 0.08), Vector3(-1.1 + k * 0.44, 1.15, -length), steel, 0.02)
-	Kit.box(_bed, Vector3(0.24, 0.12, 0.05), Vector3(-0.95, 0.0, 0.06), Kit.glow(Color(0.95, 0.08, 0.04)), 0.02)
-	Kit.box(_bed, Vector3(0.24, 0.12, 0.05), Vector3(0.95, 0.0, 0.06), Kit.glow(Color(0.95, 0.08, 0.04)), 0.02)
-	Kit.label(_bed, "TIMBER", Vector3(-1.26, 0.9, -2.3), 0.005, Color.WHITE, -PI * 0.5)
-	Kit.label(_bed, "TIMBER", Vector3(1.26, 0.9, -2.3), 0.005, Color.WHITE, PI * 0.5)
+	Kit.box(_bed, Vector3(width, 0.16, 0.16), Vector3(0, 0.3, -length), paint, 0.03)
+	Kit.box(_bed, Vector3(width, 0.16, 0.16), Vector3(0, stake + 0.3, -length), paint, 0.03)
+	var bars := int(width / 0.42) + 1
+	for k in bars:
+		Kit.box(_bed, Vector3(0.08, stake, 0.08), Vector3(-half + 0.15 + k * (width - 0.3) / maxf(bars - 1, 1), stake * 0.5 + 0.3, -length), steel, 0.02)
+	Kit.box(_bed, Vector3(0.24, 0.12, 0.05), Vector3(-width * 0.38, 0.0, 0.06), Kit.glow(Color(0.95, 0.08, 0.04)), 0.02)
+	Kit.box(_bed, Vector3(0.24, 0.12, 0.05), Vector3(width * 0.38, 0.0, 0.06), Kit.glow(Color(0.95, 0.08, 0.04)), 0.02)
+	Kit.label(_bed, "TIMBER", Vector3(-half - 0.01, stake * 0.5, -length * 0.5), 0.005, Color.WHITE, -PI * 0.5)
+	Kit.label(_bed, "TIMBER", Vector3(half + 0.01, stake * 0.5, -length * 0.5), 0.005, Color.WHITE, PI * 0.5)
 	if preview:
 		return
 	# Collision in bed space: floor, stake walls, headboard.
-	for b in [[Vector3(2.4, 0.3, length), Vector3(0, 0.05, -length * 0.5)],
-			[Vector3(0.14, 1.8, length), Vector3(-1.2, 1.0, -length * 0.5)],
-			[Vector3(0.14, 1.8, length), Vector3(1.2, 1.0, -length * 0.5)],
-			[Vector3(2.5, 1.8, 0.16), Vector3(0, 1.0, -length)]]:
+	for b in [[Vector3(width - 0.1, 0.3, length), Vector3(0, 0.05, -length * 0.5)],
+			[Vector3(0.14, stake + 0.1, length), Vector3(-half + 0.05, stake * 0.5 + 0.15, -length * 0.5)],
+			[Vector3(0.14, stake + 0.1, length), Vector3(half - 0.05, stake * 0.5 + 0.15, -length * 0.5)],
+			[Vector3(width, stake + 0.1, 0.16), Vector3(0, stake * 0.5 + 0.15, -length)]]:
 		var box := BoxShape3D.new()
 		box.size = b[0]
 		var shape := CollisionShape3D.new()
@@ -886,6 +989,31 @@ func _build_log_bed() -> void:
 		var local := Transform3D(Basis.IDENTITY, b[1])
 		_bed_shapes.append([shape, local])
 		shape.transform = _model.transform * _bed.transform * local
+
+
+## The semi's stretched chassis behind the cab: long rails out to the rear bogie, its
+## mudguards, the rear light bar and the hitch.
+func _build_semi_chassis() -> void:
+	var dark := Kit.paint(Color(0.12, 0.12, 0.13), 0.6, 0.2)
+	var paint := Kit.paint(_paint)
+	var back: float = float(_spec.bed_pivot.z) + 0.6
+	for x in [-0.55, 0.55]:
+		Kit.box(_model, Vector3(0.22, 0.34, back - 3.0), Vector3(x, 1.0, (3.0 + back) * 0.5), dark, 0.03)
+	var z := 4.0
+	while z < back:
+		Kit.box(_model, Vector3(1.1, 0.14, 0.14), Vector3(0, 1.0, z), dark, 0.02)
+		z += 1.2
+	var scale: float = _spec.get("scale", 1.0)
+	for a in _spec.axles:
+		if float(a[0]) < 4.5:
+			continue
+		var mz: float = float(a[0]) / scale
+		for x in [-1.0, 1.0]:
+			Kit.add(_model, Kit.prism(_arch(0.62, 0.78), 0.6), Vector3(x * float(a[1]) / scale, 0.62, mz), dark)
+	Kit.box(_model, Vector3(2.4, 0.18, 0.2), Vector3(0, 0.95, back), Kit.hazard(), 0.03)
+	for x in [-0.95, 0.95]:
+		Kit.box(_model, Vector3(0.24, 0.14, 0.06), Vector3(x, 1.2, back + 0.1), Kit.glow(Color(0.95, 0.08, 0.04)), 0.02)
+	Kit.box(_model, Vector3(0.3, 0.25, 0.5), Vector3(0, 0.85, back + 0.2), paint, 0.04)
 
 
 ## The logging semi's twin chrome stacks and its name on the doors.

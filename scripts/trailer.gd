@@ -287,17 +287,17 @@ func hitch(truck: RigidBody3D, truck_point: Vector3) -> void:
 	_joint.node_a = truck.get_path()
 	_joint.node_b = get_path()
 	towed_by = truck
-	if truck.get("variant") != null:
-		add_collision_exception_with(truck)  # a trailer behind a trailer: drawbar over its tail
+	add_collision_exception_with(truck)  # the drawbar sits over the tower's tail
 
 
 func unhitch() -> void:
 	if _joint:
 		_joint.queue_free()
 		_joint = null
-	if towed_by is PhysicsBody3D and towed_by is VehicleBody3D and towed_by.get("rear") == self:
+	if is_instance_valid(towed_by) and towed_by is PhysicsBody3D:
 		remove_collision_exception_with(towed_by)
-		towed_by.set("rear", null)
+		if towed_by.get("rear") == self:
+			towed_by.set("rear", null)
 	towed_by = null
 
 
