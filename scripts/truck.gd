@@ -44,12 +44,22 @@ const KINDS := {
 	},
 	"dump_xl": {
 		# Big dump truck: the dump truck at 1.5x (model units scaled; wheels in body space).
-		"name": "Big dump truck", "paint": Color(0.97, 0.72, 0.12), "mass": 34000.0, "engine": 130000.0, "launch": 1.8,
+		"name": "Big dump truck", "paint": Color(0.97, 0.72, 0.12), "mass": 34000.0, "engine": 150000.0, "launch": 2.6,
 		"top": 10.5, "loaded_top": 8.0, "reverse": 3.5, "steer": 0.45, "grip": 3.4, "mud_grip": 0.6, "bog": 0.6,
 		"radius": 0.84, "width": 0.7, "wheel_y": 1.42, "rest": 0.45, "travel": 0.4, "scale": 1.5,
 		"axles": [[-3.45, 1.6, true, false, false], [2.25, 1.6, false, true, true], [4.05, 1.6, false, true, true]],
 		"capacity": 24.0, "bed_half": Vector2(1.15, 2.27), "bed_height": 1.0, "bed_pivot": Vector3(0, 1.45, 3.0),
 		"winch": [Vector3(0, 1.0, -3.6), 200000.0, 25.0], "hitch": Vector3(0, 0.85, 3.75), "com": 0.8,
+	},
+	"blaster": {
+		# Drill and blast truck: a drill mast at the back bores the holes; charges are
+		# planted in them, linked with det cord, and set off together.
+		"name": "Explosives truck", "paint": Color(0.86, 0.2, 0.12), "mass": 14000.0, "engine": 52000.0, "launch": 1.4,
+		"top": 12.0, "loaded_top": 12.0, "reverse": 3.5, "steer": 0.5, "grip": 3.2, "mud_grip": 1.0, "bog": 0.5,
+		"radius": 0.6, "width": 0.5, "wheel_y": 1.0, "rest": 0.38,
+		"axles": [[-2.3, 1.1, true, true, false], [1.5, 1.1, false, true, true], [2.7, 1.1, false, true, true]],
+		"capacity": 0.0, "drill": true,
+		"winch": [Vector3(0, 1.0, -3.6), 110000.0, 25.0], "hitch": Vector3(0, 0.85, 3.75), "com": 0.85,
 	},
 	"recovery": {
 		"name": "Recovery truck", "paint": Color(0.8, 0.13, 0.1), "mass": 13000.0, "engine": 32000.0,
@@ -61,7 +71,7 @@ const KINDS := {
 	"recovery_xl": {
 		# Heavy 8x8 rotator wrecker: everything 1.3x a regular recovery truck (model units
 		# below are scaled by "scale"; wheels are placed in body space).
-		"name": "Heavy recovery truck", "paint": Color(0.95, 0.72, 0.08), "mass": 34000.0, "engine": 230000.0, "launch": 2.0,
+		"name": "Heavy recovery truck", "paint": Color(0.95, 0.72, 0.08), "mass": 34000.0, "engine": 260000.0, "launch": 2.8,
 		"top": 10.5, "loaded_top": 10.5, "reverse": 3.5, "steer": 0.45, "grip": 3.4, "mud_grip": 2.0, "bog": 0.1,
 		"radius": 0.72, "width": 0.6, "wheel_y": 1.25, "rest": 0.4, "scale": 1.3,
 		"axles": [[-3.2, 1.4, true, true, false], [-1.75, 1.4, true, true, false], [2.0, 1.4, false, true, true], [3.55, 1.4, false, true, true]],
@@ -78,7 +88,7 @@ const KINDS := {
 		# A big, stable logging rig: 1.4x scale, a stretched chassis on five axles with a wide
 		# stance and a low centre of gravity, and a long, wide bed of tall-staked bunks.
 		# (Model units are scaled by "scale"; wheels are placed in body space.)
-		"name": "Logging semi", "paint": Color(0.55, 0.1, 0.08), "mass": 30000.0, "engine": 280000.0, "launch": 2.6,
+		"name": "Logging semi", "paint": Color(0.55, 0.1, 0.08), "mass": 30000.0, "engine": 300000.0, "launch": 3.2,
 		"top": 15.0, "loaded_top": 13.0, "reverse": 4.0, "steer": 0.42, "grip": 3.6, "mud_grip": 0.7, "bog": 0.5,
 		"radius": 0.82, "width": 0.62, "wheel_y": 1.3, "rest": 0.5, "travel": 0.5, "scale": 1.4, "roll": 0.06,
 		"axles": [[-3.22, 1.75, true, false, false], [2.1, 1.75, false, true, true], [3.78, 1.75, false, true, true],
@@ -142,6 +152,8 @@ var recovery := false
 var winch: Winch
 var trailer: Node3D  # hitched trailer, if any
 var payload := 0.0
+## Workshop setup: index into each of TUNE's option lists (see apply_tune()).
+var tune := {}
 var payload_value := 0.0  # $ of ore in the load (see ores.gd), and the gold part of it
 var payload_gold := 0.0
 ## What's in the body: Terrain.SURFACE_SOIL or Terrain.SURFACE_GRAVEL.
@@ -186,10 +198,84 @@ var _dig_timer := 0.0
 var _handbrake := false
 
 
+## Workshop parts: per part, its options as [name, price, effects]. Effects multiply the
+## truck's spec ("engine", "top", "grip", "mud_grip", "bog", "steer", "launch") or set its
+## suspension ("stiffness", "travel", "force") and tyre size ("radius").
+const TUNE := {
+	"engine": [["Stock", 0, {}], ["Stage 1", 4000, {"engine": 1.25}], ["Stage 2", 9000, {"engine": 1.55}],
+		["Stage 3", 16000, {"engine": 1.9, "launch": 1.15}]],
+	"gearing": [["Balanced", 0, {}], ["Low (torque)", 1500, {"engine": 1.2, "launch": 1.3, "top": 0.82}],
+		["High (speed)", 1500, {"engine": 0.92, "top": 1.28}]],
+	"suspension": [["Stock", 0, {}], ["Soft (off-road)", 2000, {"stiffness": 0.7, "travel": 1.4}],
+		["Sport", 3000, {"stiffness": 1.4, "travel": 0.8, "steer": 1.08}], ["Heavy duty", 4500, {"stiffness": 1.6, "force": 1.7, "travel": 1.15}]],
+	"tires": [["Stock", 0, {}], ["Road", 1500, {"grip": 1.15, "mud_grip": 0.6, "bog": 1.3}],
+		["All-terrain", 2000, {"grip": 1.05, "mud_grip": 1.3, "bog": 0.9, "radius": 1.03}],
+		["Mud (tier 1)", 2500, {"grip": 0.97, "mud_grip": 1.8, "bog": 0.72, "radius": 1.05}],
+		["Mud (tier 2)", 5000, {"grip": 0.92, "mud_grip": 2.5, "bog": 0.52, "radius": 1.09}],
+		["Mud (tier 3)", 8000, {"grip": 0.86, "mud_grip": 3.4, "bog": 0.33, "radius": 1.14}]],
+	"diff": [["Open", 0, {}], ["Locked", 3500, {"mud_grip": 1.25, "bog": 0.8, "steer": 0.9}]],
+}
+
+
+## What a workshop setup costs over the current one (only the parts that change).
+static func tune_cost(from: Dictionary, to: Dictionary) -> int:
+	var cost := 0
+	for part in TUNE:
+		var k := int(to.get(part, 0))
+		if k != int(from.get(part, 0)) and k >= 0 and k < (TUNE[part] as Array).size():
+			cost += int(TUNE[part][k][1])
+	return cost
+
+
+## A setup with every part in range (anything else falls back to stock).
+static func clean_tune(t: Dictionary) -> Dictionary:
+	var out := {}
+	for part in TUNE:
+		var k := int(t.get(part, 0)) if (t.get(part, 0) is int or t.get(part, 0) is float) else 0
+		out[part] = k if k >= 0 and k < (TUNE[part] as Array).size() else 0
+	return out
+
+
+## Fits the workshop setup: rebuilds the spec from the stock one and re-sets the wheels.
+func apply_tune(t: Dictionary) -> void:
+	tune = clean_tune(t)
+	set_meta("tune", tune)
+	var spec: Dictionary = (KINDS[kind] as Dictionary).duplicate(true)
+	var stiffness := 1.0
+	var travel := 1.0
+	var force := 1.0
+	var radius := 1.0
+	for part in TUNE:
+		var fx: Dictionary = TUNE[part][int(tune[part])][2]
+		for key in fx:
+			match key:
+				"stiffness": stiffness *= float(fx[key])
+				"travel": travel *= float(fx[key])
+				"force": force *= float(fx[key])
+				"radius": radius *= float(fx[key])
+				"top":
+					spec.top = float(spec.top) * float(fx[key])
+					spec.loaded_top = float(spec.loaded_top) * float(fx[key])
+				_:
+					spec[key] = float(spec.get(key, 1.0)) * float(fx[key])
+	spec.radius = float(spec.radius) * radius
+	_spec = spec
+	var stock: Dictionary = KINDS[kind]
+	for w in _wheels:
+		w.wheel_radius = spec.radius
+		w.suspension_stiffness = (60.0 if kind != "pickup" else 45.0) * stiffness
+		w.suspension_travel = float(spec.get("travel", 0.3 if kind != "pickup" else 0.22)) * travel
+		w.suspension_max_force = 90000.0 * maxf(float(spec.mass) / 9000.0, 0.4) * force
+		w.wheel_friction_slip = spec.grip
+		for child in w.get_children():
+			if child is Node3D:
+				(child as Node3D).scale = Vector3.ONE * (float(spec.radius) / float(stock.radius))
+
+
 func _ready() -> void:
 	if recovery and kind != "recovery_xl":
 		kind = "recovery"
-	_spec = KINDS[kind]
+	_spec = (KINDS[kind] as Dictionary).duplicate(true)
 	recovery = kind == "recovery" or kind == "recovery_xl"
 	if _spec.has("log_bed"):
 		variant = "logs"
@@ -489,12 +575,14 @@ func _rut() -> void:
 		return
 	_last_rut = global_position
 	var fwd := global_basis.z
+	var per_wheel := mass / 1000.0 / maxf(_wheels.size(), 1)  # tonnes on each tyre
 	for w in _wheels:
 		if w.is_in_contact():
 			var p := w.global_position - Vector3(0, w.wheel_radius, 0)
-			# Firm ground just gets tyre marks; soft ground takes a real rut.
+			# Firm ground just gets tyre marks; soft ground takes a real rut, and mud and
+			# snow give way further under a heavy truck.
 			var depth := RUT_DEPTH if terrain.mud_at(p.x, p.z) > 0.15 else 0.0
-			terrain.press(p, fwd, 0.35, float(_spec.width) * 0.6, depth * (1.0 + mass / 20000.0))
+			terrain.press(p, fwd, 0.35, float(_spec.width) * 0.6, depth, per_wheel)
 
 
 ## Mud sinks the wheels, cuts their grip and drags on the truck, all in proportion to
@@ -620,6 +708,34 @@ func _operate_bed(delta: float) -> void:
 		if absf(payload - _heap_fill) > 0.04:
 			_update_heap()
 	_update_hoist()
+
+
+## The drill bit's tip (where the next hole goes), just behind the truck.
+func drill_point() -> Vector3:
+	var at := _model.to_global(Vector3(0, 0, 4.4))
+	at.y = terrain.get_height(at.x, at.z)
+	return at
+
+
+## The drill rig: a mast on the back with the drill rod, magazine boxes and a reel of cord.
+func _build_drill_rig() -> void:
+	var paint := Kit.paint(_paint)
+	var dark := Kit.paint(Color(0.15, 0.15, 0.16), 0.6, 0.2)
+	var steel := Kit.metal(Color(0.6, 0.6, 0.62))
+	Kit.box(_model, Vector3(2.3, 0.2, 4.0), Vector3(0, 1.45, 2.0), dark, 0.03)  # deck
+	for k in 2:
+		Kit.box(_model, Vector3(0.9, 0.7, 1.0), Vector3(-0.6 + k * 1.2, 1.9, 1.0), Kit.paint(Color(0.95, 0.75, 0.1)), 0.05)
+	Kit.label(_model, "EXPLOSIVES", Vector3(-1.16, 1.9, 1.6), 0.005, Color(0.9, 0.1, 0.1), -PI * 0.5)
+	Kit.label(_model, "EXPLOSIVES", Vector3(1.16, 1.9, 1.6), 0.005, Color(0.9, 0.1, 0.1), PI * 0.5)
+	Kit.add(_model, Kit.cylinder(0.45, 0.6, 14), Vector3(0, 2.0, 2.6), Kit.paint(Color(0.9, 0.5, 0.1)), Vector3(0, 0, PI * 0.5))
+	# The mast leans out over the back with the rod down its middle.
+	for x in [-0.3, 0.3]:
+		Kit.beam(_model, Vector3(x, 1.5, 3.6), Vector3(x, 5.6, 4.3), 0.14, paint)
+	for k in 5:
+		Kit.beam(_model, Vector3(-0.3, 2.0 + k * 0.8, 3.68 + k * 0.14), Vector3(0.3, 2.0 + k * 0.8, 3.68 + k * 0.14), 0.06, paint)
+	Kit.beam(_model, Vector3(0, 5.4, 4.27), Vector3(0, 0.1, 4.4), 0.09, steel)
+	Kit.box(_model, Vector3(0.6, 0.6, 0.6), Vector3(0, 5.2, 4.25), dark, 0.05)  # drill head
+	Kit.add(_model, Kit.sphere(0.12, 8, true), Vector3(0.9, 3.0, -0.6), Kit.glow(Color(1.0, 0.5, 0.05), 2.4))
 
 
 ## Where you stand to strap or release the load: the back of the bed.
@@ -834,6 +950,7 @@ func _build_model() -> void:
 				"dump", "dump_xl": _build_dump_body(_spec.bed_pivot)
 				"recovery", "recovery_xl": _build_wrecker()
 				"haul": _build_haul()
+				"blaster": _build_drill_rig()
 				"logs": _build_log_bed()
 				"log_semi":
 					_build_semi_chassis()

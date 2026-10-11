@@ -21,7 +21,7 @@ extends Node
 signal status_changed(text: String)
 signal players_changed
 
-const VERSION := "earthworks-net-10"  # bump whenever the messages change: mismatched games refuse politely
+const VERSION := "earthworks-net-11"  # bump whenever the messages change: mismatched games refuse politely
 const DEFAULT_PORT := 24680
 const MAX_PLAYERS := 4095  # no real limit (ENet's ceiling); the host's upload is what runs out
 const STATE_INTERVAL := 0.05  # 20 updates a second
@@ -32,7 +32,7 @@ const BODIES_PER_PACKET := 32  # 32 x 32 bytes: fits one network packet
 const MAX_REQUESTS_PER_SECOND := 20
 const INPUT_ACTIONS := ["drive_forward", "drive_back", "turn_left", "turn_right", "swing_left", "swing_right",
 	"boom_up", "boom_down", "stick_out", "stick_in", "bucket_curl", "bucket_dump", "handbrake"]
-const REQUESTS := ["enter", "exit", "utility", "ramps", "reset", "buy", "deliver", "take_job", "abandon_job", "return", "supply", "tie", "cut_tie"]
+const REQUESTS := ["enter", "exit", "utility", "ramps", "reset", "buy", "deliver", "take_job", "abandon_job", "return", "supply", "tie", "cut_tie", "tune", "detonate"]
 const Player = preload("res://scripts/player.gd")
 const Lobby = preload("res://scripts/lobby.gd")
 ## Free public STUN servers: they tell each player its public address, for the direct link.
@@ -700,6 +700,16 @@ func send_removed(ids: Array) -> void:
 		rpc("_rx_removed", PackedInt32Array(ids))
 
 
+func send_charges(list: Array) -> void:
+	if role == "host":
+		rpc("_rx_charges", list)
+
+
+func send_blast(at: Vector3) -> void:
+	if role == "host":
+		rpc("_rx_blast", at)
+
+
 func send_ties(list: Array) -> void:
 	if role == "host" and players.size() > 1:
 		rpc("_rx_ties", list)
@@ -875,6 +885,8 @@ func _tx_request(action: String, arg: Variant) -> void:
 		return
 	if action == "cut_tie" and not arg is int:
 		return
+	if action == "tune" and not (arg is Array and arg.size() == 2 and arg[0] is int and arg[1] is Dictionary and (arg[1] as Dictionary).size() <= 8):
+		return
 	if action == "tie" and not (arg is Array and arg.size() == 5 and arg[0] in ["strap", "rope"] and arg[1] is String
 			and arg[2] is String and arg[3] is Vector3 and arg[4] is Vector3 and (arg[3] as Vector3).is_finite() and (arg[4] as Vector3).is_finite()):
 		return
@@ -1038,6 +1050,18 @@ func _rx_removed(ids: PackedInt32Array) -> void:
 		for id in ids:
 			_body_targets.erase(id)
 		main.net_remove_bodies(Array(ids))
+
+
+@rpc("authority", "call_remote", "reliable")
+func _rx_charges(list: Array) -> void:
+	if _from_host() and list.size() <= 64:
+		main.net_charges(list.filter(func(c): return c is Vector3))
+
+
+@rpc("authority", "call_remote", "reliable")
+func _rx_blast(at: Vector3) -> void:
+	if _from_host():
+		main.blast_effect(at)
 
 
 @rpc("authority", "call_remote", "reliable")

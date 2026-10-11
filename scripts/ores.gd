@@ -43,7 +43,12 @@ static func band_at(depth: float) -> int:
 ## How rich the ground is here (0.5 .. 2, and half as much again in mountain rock).
 static func region(p: Vector2) -> float:
 	var n := clampf(_field("gold").get_noise_2d(p.x, p.y) * 0.5 + 0.5, 0.0, 1.0)
-	return 0.5 + 1.5 * smoothstep(0.2, 0.85, n)
+	var rich := 0.5 + 1.5 * smoothstep(0.2, 0.85, n)
+	for h in hotspots:
+		var d := p.distance_to(Vector2(h.x, h.y))
+		if d < h.z:
+			rich *= lerpf(1.0, float(h.w), smoothstep(h.z, h.z * 0.4, d))
+	return rich
 
 
 ## $ of ore in a cubic metre of soil dug at `p`, `depth` m down. Gold bands count as gold
@@ -54,6 +59,8 @@ static func grade(p: Vector2, depth: float, rock := false) -> Vector2:
 	return Vector2(value, 1.0 if band[3] else 0.0)
 
 static var _noise: Dictionary = {}
+## Extra-rich ground (x, z, radius, multiplier): the open-pit mine.
+static var hotspots: Array = []
 static var _meshes: Dictionary = {}
 
 

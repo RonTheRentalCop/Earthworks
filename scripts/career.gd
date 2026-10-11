@@ -26,7 +26,7 @@ const MACHINES := [
 	{"id": "dozer_carry", "name": "Carry dozer", "price": 65000, "kind": "dozer_carry",
 		"blurb": "Giant high-wall blade: shoves a hill forward.", "stats": ["51 m³ carry blade", "Biggest machine on site", "950 kN winch"]},
 	{"id": "conveyor", "name": "Tracked conveyor", "price": 30000, "kind": "conveyor",
-		"blurb": "Tip soil in the hopper: the belt carries it away.", "stats": ["28 m folding belt", "8 m³ hopper", "Raise · fold · drive"]},
+		"blurb": "Tip soil in the hopper: the belt carries it away.", "stats": ["28 m folding belt", "40 m³ hopper", "12 m³ a second"]},
 	{"id": "roller", "name": "Roller", "price": 16000, "kind": "roller",
 		"blurb": "Set a level, switch it on: grades the ground flat.", "stats": ["2.2 m drum", "Cuts and fills to level", "Rolls it firm"]},
 	{"id": "roller_xl", "name": "Big roller", "price": 34000, "kind": "roller_xl",
@@ -37,6 +37,8 @@ const MACHINES := [
 		"blurb": "Tip ore-rich soil in: out come gold and silver bars.", "stats": ["12 m³ hopper", "Bars worth 1.5x crushing", "Pick them up with the magnet"]},
 	{"id": "mobile_shredder", "name": "Portable shredder", "price": 22000, "kind": "mobile_shredder",
 		"blurb": "Tracked shredder: take it to the logs, feed it, get paid.", "stats": ["Infeed at the back", "Logs and stumps", "Pays on the spot"]},
+	{"id": "blaster", "name": "Explosives truck", "price": 28000, "kind": "blaster",
+		"blurb": "Drill holes, plant linked charges, blow rock apart.", "stats": ["Drill mast", "30 charges", "Blasts through rock"]},
 	{"id": "dump", "name": "Dump truck", "price": 0, "kind": "dump",
 		"blurb": "Hauls soil from the dig to the fill.", "stats": ["8 m³ body", "40 km/h", "Tow hitch"]},
 	{"id": "pickup", "name": "Site pickup", "price": 6500, "kind": "pickup",
@@ -86,6 +88,7 @@ var player_name := ""
 var last_address := ""
 var last_port := 24680
 var last_code := ""
+var tune_presets := {}  # name -> workshop setup
 var owned := {}  # id -> true
 var stats := {"earned": 0, "jobs": 0, "logs": 0, "stumps": 0, "soil": 0.0}
 ## False in automated tests, so they never touch the player's save.
@@ -108,6 +111,7 @@ func _load_settings() -> void:
 	last_address = String(cfg.get_value("settings", "address", last_address))
 	last_port = int(cfg.get_value("settings", "port", last_port))
 	last_code = String(cfg.get_value("settings", "code", last_code))
+	tune_presets = cfg.get_value("settings", "tune_presets", {})
 
 
 ## Saves just the settings (works while playing in someone else's game too).
@@ -119,6 +123,7 @@ func save_settings() -> void:
 	cfg.set_value("settings", "address", last_address)
 	cfg.set_value("settings", "port", last_port)
 	cfg.set_value("settings", "code", last_code)
+	cfg.set_value("settings", "tune_presets", tune_presets)
 	cfg.save(SAVE_PATH)
 
 
@@ -211,6 +216,7 @@ func save_game() -> void:
 	cfg.set_value("settings", "address", last_address)
 	cfg.set_value("settings", "port", last_port)
 	cfg.set_value("settings", "code", last_code)
+	cfg.set_value("settings", "tune_presets", tune_presets)
 	cfg.save(SAVE_PATH)
 
 

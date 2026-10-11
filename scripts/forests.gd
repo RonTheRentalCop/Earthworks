@@ -14,7 +14,7 @@ const Scenery = preload("res://scripts/scenery.gd")
 const Terrain = preload("res://scripts/terrain.gd")
 
 const CELL := 64.0
-const GRID := 16  # 1024 m / 64 m
+const GRID := 24  # 1536 m / 64 m
 const LIVE_IN := 85.0  # cells come alive within this of an anchor...
 const LIVE_OUT := 120.0  # ...and go back to pictures beyond this
 const SPAWNS_PER_FRAME := 40

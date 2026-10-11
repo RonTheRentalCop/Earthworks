@@ -119,6 +119,8 @@ var _ground_roll := 0.0
 var _joint_velocity := Vector2.ZERO  # lift, pitch
 var _visual: Node3D
 var _arms: Node3D
+## Share of the blade's load that leaks round its ends per metre pushed.
+const LEAK_PER_METRE := 0.025
 var _blade: Node3D
 ## Stump grinder drum on the front of the blade: switched on, it grinds up the stumps it
 ## reaches (left standing or lying loose), paid for on the spot.
@@ -277,7 +279,7 @@ func _rut() -> void:
 	_last_rut = global_transform
 	var fwd := -global_basis.z
 	for side in [-1.0, 1.0]:
-		terrain.press(global_position + global_basis.x * side * _th.y, fwd, _th.x + 0.3, TRACK_WIDTH * size * 0.5, RUT_DEPTH)
+		terrain.press(global_position + global_basis.x * side * _th.y, fwd, _th.x + 0.3, TRACK_WIDTH * size * 0.5, RUT_DEPTH, 4.0 * size * size)
 
 
 func reset() -> void:
@@ -583,11 +585,9 @@ func _doze(delta: float) -> float:
 	# Tilting the blade raises one end and drops the other.
 	left.y = edge - sin(_tilt) * half_edge * size
 	right.y = edge + sin(_tilt) * half_edge * size
-	var edge_mid := left.lerp(right, 0.5) + fwd * 0.3 * size
-	var cutting_gravel := terrain.is_gravel(edge_mid.x, edge_mid.z)
 	var removed := terrain.cut_flat(left, right, fwd, CUT_BACK * size, CUT_FRONT * size, budget)
 	if removed > blade_load * 0.5 and removed > 0.001:
-		blade_material = Terrain.SURFACE_GRAVEL if cutting_gravel else Terrain.SURFACE_SOIL
+		blade_material = Terrain.SURFACE_GRAVEL if terrain.last_cut_gravel > removed * 0.5 else Terrain.SURFACE_SOIL
 	blade_load += removed
 	var share := 1.0 if terrain.last_cut_wanted <= 0.0 else clampf(removed / terrain.last_cut_wanted, 0.0, 1.0)
 	bogged = share < 0.5
@@ -607,21 +607,34 @@ func _doze(delta: float) -> float:
 			terrain.deposit(p.x, p.z, spill, 0.9 * size, blade_material)
 		_spill_side = -1.0 if _angle > 0.0 else 1.0
 	else:
-		# The U-blade's wings hold everything: what won't fit rolls over the top of the
-		# heap and piles up just ahead, so the blade keeps pushing it.
-		spill = maxf(blade_load - capacity, 0.0)
+		# A straight blade carries most of its load, but soil keeps leaking round its ends as
+		# it's pushed (windrows either side of the cut), and what won't fit spills: some
+		# rolls over the top and piles up just ahead (the blade keeps pushing it), the rest
+		# runs off round the ends.
+		var leak := blade_load * LEAK_PER_METRE * pushed * (0.3 if blade_type == "straight" and blade_width_mult > 1.1 else 1.0)
+		var over := maxf(blade_load - capacity, 0.0)
+		spill = minf(leak + over, blade_load)
 		if spill > 0.0005:
 			blade_load -= spill
-			terrain.deposit_strip(left, right, fwd, 0.6 * size, 0.9 * size, spill, blade_material)
+			var ahead := over * 0.6
+			var sides := spill - ahead
+			if ahead > 0.0005:
+				terrain.deposit_strip(left, right, fwd, 0.6 * size, 0.9 * size, ahead, blade_material)
+			for end in [-1.0, 1.0]:
+				var q := _blade.to_global(Vector3(end * (half_edge + 0.45), -0.58, 0.5))
+				terrain.deposit(q.x, q.z, sides * 0.5, 0.7 * size, blade_material)
 		_spill_side = 0.0
 	spilling = spill > 0.002
 	# Lift the blade clear or reverse and the load drops in front as a pile.
 	var centre := left.lerp(right, 0.5)
 	var lifted := _blade.to_global(Vector3(0, -0.58, -0.14)).y > _ground(centre) + 0.15
 	if blade_load > 0.0 and (lifted or _speed < -0.1):
+		# It slumps off the blade face into a heap just in front (highest in the middle).
 		var drop := minf(blade_load, DROP_RATE * size * size * delta)
 		blade_load -= drop
-		terrain.deposit_strip(left, right, fwd, 0.15 * size, 1.1 * size, drop, blade_material)
+		var heap := centre + fwd * (0.7 * size)
+		terrain.deposit(heap.x, heap.z, drop * 0.65, half_edge * size * 0.75, blade_material)
+		terrain.deposit_strip(left, right, fwd, 0.15 * size, 1.1 * size, drop * 0.35, blade_material)
 	return share
 
 

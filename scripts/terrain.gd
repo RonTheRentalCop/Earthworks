@@ -21,24 +21,24 @@ signal area_changed(world_rect: Rect2)
 signal soil_removed(at: Vector3, volume: float, depth: float)
 signal chunk_rebuilt(cx: int, cz: int)
 
-const CELLS := 4096
-const CELL_SIZE := 0.25
+const CELLS := 5120
+const CELL_SIZE := 0.3
 const VERTS := CELLS + 1
-const HALF_SIZE := CELLS * CELL_SIZE * 0.5  # 512 m
+const HALF_SIZE := CELLS * CELL_SIZE * 0.5  # 768 m
 const CELL_AREA := CELL_SIZE * CELL_SIZE
 const GEN_CELLS := 32  # generated in 8 m blocks
-const GEN_CHUNKS := 128  # CELLS / GEN_CELLS
+const GEN_CHUNKS := 160  # CELLS / GEN_CELLS
 const CHUNK_CELLS := 64  # drawn in 16 m chunks
-const CHUNKS := 64  # CELLS / CHUNK_CELLS
+const CHUNKS := 80  # CELLS / CHUNK_CELLS
 const COLLISION_CELLS := 64
-const COLLISION_TILES := 64  # CELLS / COLLISION_CELLS
+const COLLISION_TILES := 80  # CELLS / COLLISION_CELLS
 const BASE_STEP := 4  # the smooth base is sampled every metre
-const BASE_VERTS := 1025  # CELLS / BASE_STEP + 1
+const BASE_VERTS := 1281  # CELLS / BASE_STEP + 1
 const NEAR_RADIUS := 150.0  # detailed chunks within this of the camera
 const STREAM_BUDGET_USEC := 5000  # time per frame for streaming ground in
 const SLUMP_BUDGET_USEC := 2000  # per settling pass (two a frame)
 const FAR_TILE_CELLS := 512  # 128 m horizon tiles
-const FAR_TILES := 8
+const FAR_TILES := 10
 const FAR_STEP := 8  # 2 m between horizon vertices
 const FAR_N := 65  # FAR_TILE_CELLS / FAR_STEP + 1
 const MIN_HEIGHT := -14.0
@@ -130,6 +130,13 @@ var mud := PackedFloat32Array()  # 0 dry .. 1 deep mud
 var surface := PackedByteArray()  # SURFACE_SOIL / GRAVEL / SNOW / ICE
 var pressed := PackedByteArray()  # 1 = already rutted by tracks or wheels
 var firm := PackedByteArray()  # 1 = a sawn trench wall: holds a vertical face (no slumping)
+## Gravel is a layer, not a colour: how thick it lies (2 cm units; 255 = the quarry's and
+## the pads' own gravel, as deep as you dig). Digging through it reaches soil again.
+var gravel_layer := PackedByteArray()
+const GRAVEL_STEP := 0.02
+## Gravel in what the last dig() / cut_flat() took (m3).
+var last_dig_gravel := 0.0
+var last_cut_gravel := 0.0
 var protected := PackedByteArray()  # 1 = can't be dug below its original level (the depot)
 ## Detailed chunks load around this node (the camera).
 var focus: Node3D
@@ -155,7 +162,7 @@ var _generated := PackedByteArray()  # per 8 m block
 var _ops: Array = []  # recorded world features
 var _op_grid: Array = []  # per 64 m cell: indices of the features touching it
 const OP_CELL := 64.0
-const OP_GRID := 16
+const OP_GRID := 24  # map width / OP_CELL
 var _building := true  # until finalize(): features also shape the "original" ground
 var _material := ShaderMaterial.new()
 var _chunk_indices := PackedInt32Array()
@@ -205,6 +212,8 @@ func generate(seed_value: int) -> void:
 	pressed.fill(0)
 	firm.resize(count)
 	firm.fill(0)
+	gravel_layer.resize(count)
+	gravel_layer.fill(0)
 	protected.resize(count)
 	protected.fill(0)
 	_generated.resize(GEN_CHUNKS * GEN_CHUNKS)
@@ -563,6 +572,7 @@ func _apply_op(op: Dictionary, r: Rect2i, update_original := true) -> void:
 				var i := row + x
 				if t == OP_GRAVEL:
 					surface[i] = SURFACE_GRAVEL
+					gravel_layer[i] = 255
 					grass_mask[i] = 0
 					mud[i] = 0.0
 				else:
@@ -812,6 +822,35 @@ func mud_at(wx: float, wz: float) -> float:
 	return mud[_index_at(wx, wz)]
 
 
+## Lays `added` m of material on vertex i: gravel thickens the gravel layer; soil buries it.
+func _lay(i: int, added: float, material: int) -> void:
+	if material == SURFACE_GRAVEL:
+		if surface[i] != SURFACE_ROCK:
+			surface[i] = SURFACE_GRAVEL
+		if gravel_layer[i] != 255:
+			gravel_layer[i] = mini(254, gravel_layer[i] + maxi(1, roundi(added / GRAVEL_STEP)))
+		mud[i] = 0.0
+	elif surface[i] == SURFACE_GRAVEL and added > 0.02:
+		surface[i] = SURFACE_SOIL
+		gravel_layer[i] = 0
+
+
+## Takes `cut` m off vertex i's top: returns how much of that was gravel, and wears the
+## layer away (to soil once it's gone).
+func _wear(i: int, cut: float) -> float:
+	if surface[i] != SURFACE_GRAVEL or cut <= 0.0:
+		return 0.0
+	if gravel_layer[i] == 255:
+		return cut
+	var have := gravel_layer[i] * GRAVEL_STEP
+	var took := minf(cut, have)
+	var left := have - took
+	gravel_layer[i] = roundi(left / GRAVEL_STEP)
+	if gravel_layer[i] == 0:
+		surface[i] = SURFACE_SOIL
+	return took
+
+
 func is_gravel(wx: float, wz: float) -> bool:
 	return surface[_index_at(wx, wz)] == SURFACE_GRAVEL
 
@@ -880,10 +919,13 @@ func dig(center: Vector3, radius: float, max_volume: float, sawn := false) -> fl
 				cuts.append(cut)
 				total += cut
 	if total <= 0.0:
+		last_dig_gravel = 0.0
 		return 0.0
 	var scale_factor := minf(1.0, max_volume / (total * CELL_AREA))
+	last_dig_gravel = 0.0
 	for k in indices.size():
 		heights[indices[k]] -= cuts[k] * scale_factor
+		last_dig_gravel += _wear(indices[k], cuts[k] * scale_factor) * CELL_AREA
 		disturbed[indices[k]] = 1
 		pressed[indices[k]] = 0
 		firm[indices[k]] = 0
@@ -920,13 +962,11 @@ func deposit(wx: float, wz: float, volume: float, radius: float, material := SUR
 		return
 	for k in indices.size():
 		var i := indices[k]
-		heights[i] += volume * weights[k] / (total * CELL_AREA)
+		var added := volume * weights[k] / (total * CELL_AREA)
+		heights[i] += added
 		disturbed[i] = 1
 		pressed[i] = 0
-		if material == SURFACE_GRAVEL:
-			# Gravel makes firm ground: no mud, nothing sinks in.
-			surface[i] = SURFACE_GRAVEL
-			mud[i] = 0.0
+		_lay(i, added, material)  # (gravel makes firm ground: no mud, nothing sinks in)
 	_on_edited(rect)
 
 
@@ -965,10 +1005,13 @@ func cut_flat(a: Vector3, b: Vector3, forward: Vector3, back: float, front: floa
 				total += cut
 	last_cut_wanted = wanted * CELL_AREA
 	if total <= 0.0:
+		last_cut_gravel = 0.0
 		return 0.0
 	var scale_factor := minf(1.0, max_volume / (total * CELL_AREA))
+	last_cut_gravel = 0.0
 	for k in indices.size():
 		heights[indices[k]] -= cuts[k] * scale_factor
+		last_cut_gravel += _wear(indices[k], cuts[k] * scale_factor) * CELL_AREA
 		disturbed[indices[k]] = 1
 		pressed[indices[k]] = 0
 	_on_edited(r)
@@ -1008,19 +1051,22 @@ func deposit_strip(a: Vector3, b: Vector3, forward: Vector3, start: float, lengt
 		return
 	for k in indices.size():
 		var i := indices[k]
-		heights[i] += volume * weights[k] / (total * CELL_AREA)
+		var added := volume * weights[k] / (total * CELL_AREA)
+		heights[i] += added
 		disturbed[i] = 1
 		pressed[i] = 0
-		if material == SURFACE_GRAVEL:
-			surface[i] = SURFACE_GRAVEL
-			mud[i] = 0.0
+		_lay(i, added, material)
 	_on_edited(r)
 
 
 ## Presses a rut under a track or wheel (an oriented rectangle). Firm ground ruts once;
 ## soft, muddy ground keeps giving way on every pass, up to a depth set by how wet it
 ## is, and the squeezed-out mud heaps up beside the rut. Flattens the grass, shows soil.
-func press(center: Vector3, forward: Vector3, half_length: float, half_width: float, depth: float) -> void:
+## (`load_t`: tonnes bearing down on this patch. Snow packs down under it, deeper the
+## heavier the machine; mud gives way further under heavy wheels too.)
+func press(center: Vector3, forward: Vector3, half_length: float, half_width: float, depth: float, load_t := 2.0) -> void:
+	var snow_depth := clampf(0.05 + 0.035 * load_t, 0.06, 0.4)
+	var mud_extra := clampf(load_t / 6.0, 0.4, 2.2)
 	var fwd := Vector2(forward.x, forward.z).normalized()
 	var side := Vector2(-fwd.y, fwd.x)
 	var c := Vector2(center.x, center.z)
@@ -1033,15 +1079,21 @@ func press(center: Vector3, forward: Vector3, half_length: float, half_width: fl
 			var i := z * VERTS + x
 			if surface[i] == SURFACE_GRAVEL or protected[i] == 1:
 				continue
+			var snow := surface[i] == SURFACE_SNOW
 			var soft := mud[i] > 0.3
-			if pressed[i] == 1 and not soft:
+			if pressed[i] == 1 and not soft and not snow:
 				continue
 			var w := grid_to_world(x, z) - c
 			if absf(w.dot(fwd)) > half_length or absf(w.dot(side)) > half_width:
 				continue
-			if depth > 0.0:
-				var sink := depth + 0.14 * mud[i] if pressed[i] == 0 else 0.03 * mud[i]
-				var floor_height := original[i] - (depth + 0.7 * mud[i])
+			if snow:
+				# Snow packs down to the machine's weight (each pass a little more).
+				var packed := original[i] - snow_depth
+				if heights[i] > packed + 0.005:
+					heights[i] = maxf(packed, heights[i] - snow_depth * 0.5)
+			elif depth > 0.0:
+				var sink := (depth + 0.14 * mud[i]) * mud_extra if pressed[i] == 0 else 0.03 * mud[i] * mud_extra
+				var floor_height := original[i] - (depth + 0.7 * mud[i]) * mud_extra
 				var drop := clampf(heights[i] - floor_height, 0.0, sink) if soft else sink
 				heights[i] -= drop
 				if soft:
@@ -1080,6 +1132,45 @@ func dig_in(center: Vector3, forward: Vector3, half_length: float, half_width: f
 		return 0.0
 	_mark_dirty(r)
 	_push_aside(center, forward, half_width, removed * CELL_AREA)
+	return removed * CELL_AREA
+
+
+## An explosive charge going off at `center` (the bottom of its drill hole): blows a
+## crater `radius` across, up to `depth` deep, through rock as easily as soil (and the
+## rock round it is left fractured: digs like soil), and throws the spoil out in a rim.
+## Returns the volume blown out.
+func blast(center: Vector3, radius: float, depth: float) -> float:
+	var rect := _vertex_rect(center.x, center.z, radius * 1.4)
+	_ensure(rect)
+	var removed := 0.0
+	var top := get_height(center.x, center.z)
+	for z in range(rect.position.y, rect.end.y):
+		for x in range(rect.position.x, rect.end.x):
+			var w := grid_to_world(x, z)
+			var d := Vector2(w.x - center.x, w.y - center.z).length()
+			var i := z * VERTS + x
+			if d < radius * 1.4 and surface[i] == SURFACE_ROCK:
+				surface[i] = SURFACE_SOIL  # fractured: diggable now
+				disturbed[i] = 1
+			if d > radius or protected[i] == 1:
+				continue
+			var t := d / radius
+			var target := top - depth * (1.0 - t * t)
+			var cut := heights[i] - maxf(target, _floor(i))
+			if cut > 0.0:
+				heights[i] -= cut
+				removed += cut
+				disturbed[i] = 1
+				pressed[i] = 0
+				firm[i] = 0
+				_wear(i, cut)
+	_on_edited(rect)
+	# Spoil lands round the crater as a rough rim.
+	var volume := removed * CELL_AREA * 0.85
+	for k in 10:
+		var a := TAU * k / 10.0 + sin(center.x + k) * 0.3
+		var at := Vector2(center.x, center.z) + Vector2.from_angle(a) * radius * 1.45
+		deposit(at.x, at.y, volume / 10.0, radius * 0.6)
 	return removed * CELL_AREA
 
 
@@ -1721,6 +1812,7 @@ func net_apply_chunk(data: Array) -> bool:
 				disturbed[i] = dd[j]
 				pressed[i] = dp[j]
 				surface[i] = ds[j]
+				gravel_layer[i] = (255 if dd[j] == 0 else 20) if ds[j] == SURFACE_GRAVEL else 0
 				j += 1
 		_mark_dirty(Rect2i(cx * CHUNK_CELLS, cz * CHUNK_CELLS, n, n))
 		return true
@@ -1740,6 +1832,7 @@ func net_apply_chunk(data: Array) -> bool:
 			pressed[i] = p[k]
 			if not s.is_empty():
 				surface[i] = s[k]
+				gravel_layer[i] = (255 if d[k] == 0 else 20) if s[k] == SURFACE_GRAVEL else 0
 			k += 1
 	_mark_dirty(Rect2i(cx * CHUNK_CELLS, cz * CHUNK_CELLS, n, n))
 	return true

@@ -9,11 +9,11 @@ extends Node3D
 const Terrain = preload("res://scripts/terrain.gd")
 
 const STEP := 2  # terrain vertices per water cell
-const SIZE := 2049  # Terrain.CELLS / STEP + 1
+const SIZE := 2561  # Terrain.CELLS / STEP + 1
 const CELL := Terrain.CELL_SIZE * STEP
 const CELL_AREA := CELL * CELL
 const TILE := 32  # 16 m tiles
-const TILES := 64  # (SIZE - 1) / TILE
+const TILES := 80  # (SIZE - 1) / TILE
 const FLOW := 0.2  # share of the level difference exchanged per tick
 const MOMENTUM := 0.55  # share of last tick's flow across an edge that carries on (water keeps moving)
 const MAX_SHARE := 0.24  # a cell gives at most this share of its depth to one neighbour

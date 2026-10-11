@@ -19,6 +19,7 @@ signal join_requested(address: String, port: int, password: String, player_name:
 signal host_online_requested(player_name: String)
 signal join_code_requested(code: String, player_name: String)
 signal leave_requested
+signal tune_requested(vehicle_id: int, setup: Dictionary)
 signal closed
 
 const Career = preload("res://scripts/career.gd")
@@ -61,6 +62,9 @@ var _depot: Control
 var _pause: Control
 var _controls: Control
 var _multi: Control
+var _workshop: Control
+var _ws_truck: Node3D  # the truck on the workshop's ramp
+var _ws_setup := {}  # the parts picked (fitted when you pay)
 var _tab := 0
 var _tab_buttons: Array[Button] = []
 var _body: VBoxContainer
@@ -97,6 +101,7 @@ func setup(main_node: Node3D, career_node: Career) -> void:
 	_build_pause()
 	_build_controls()
 	_multi = _window(Vector2(760, 600))
+	_workshop = _window(Vector2(920, 640))
 	_render_thumbnails()
 	career.money_changed.connect(func(_m: int, _c: int, _r: String) -> void: _refresh_money())
 
@@ -130,7 +135,7 @@ func close() -> void:
 func _show(screen: Control) -> void:
 	is_open = true
 	_root.visible = true
-	for s in [_depot, _pause, _controls, _multi]:
+	for s in [_depot, _pause, _controls, _multi, _workshop]:
 		s.visible = s == screen
 	get_tree().paused = true
 	_refresh_money()
@@ -419,6 +424,7 @@ func _fill_pause() -> void:
 			main.updater.restart()])
 	items += [["RESUME", close], ["DEPOT  ·  HIRE & JOBS", func() -> void: open_depot()],
 			["MULTIPLAYER" + ("  ·  %d PLAYERS" % main.net.players.size() if main.net.is_online() else ""), open_multiplayer],
+			["WORKSHOP  ·  TUNE YOUR TRUCKS", open_workshop],
 			["CONTROLS", open_controls], ["GRAPHICS:  " + quality_name, _cycle_quality]]
 	if not main.net.is_client():
 		items.append(["CLEAN UP SITE  ·  clear loose stumps & rocks", func() -> void:
@@ -446,6 +452,123 @@ func _fill_pause() -> void:
 func _cycle_quality() -> void:
 	quality_changed.emit((career.quality + 1) % 3)
 	_fill_pause()
+
+
+## The workshop at the company depot: fit engines, gearing, suspension, tyres and diffs
+## to your site trucks, and save setups as presets.
+func open_workshop() -> void:
+	_show(_workshop)
+	var trucks: Array = main.machines.filter(func(m): return m is Truck and not m.broken)
+	if not is_instance_valid(_ws_truck) or not _ws_truck in trucks:
+		var driving = main.driving()
+		_ws_truck = driving if driving in trucks else (trucks[0] if not trucks.is_empty() else null)
+		_ws_setup = (_ws_truck.tune as Dictionary).duplicate() if _ws_truck else {}
+	_fill_workshop()
+
+
+func _fill_workshop() -> void:
+	var holder: Control = _workshop.get_child(0)
+	for c in holder.get_children():
+		holder.remove_child(c)
+		c.queue_free()
+	var box := VBoxContainer.new()
+	box.add_theme_constant_override("separation", 8)
+	holder.add_child(box)
+	box.add_child(_label("WORKSHOP", 30, ACCENT, true))
+	var back := _button("BACK", 16)
+	back.pressed.connect(open_pause)
+	if not main.at_depot():
+		box.add_child(_label("The workshop is at the company depot (the yellow yard on the minimap). Drive a truck there.", 15, MUTED))
+		box.add_child(back)
+		_focus_first()
+		return
+	var trucks: Array = main.machines.filter(func(m): return m is Truck and not m.broken)
+	if trucks.is_empty() or _ws_truck == null:
+		box.add_child(_label("No trucks in the fleet. Hire one at the depot first.", 15, MUTED))
+		box.add_child(back)
+		_focus_first()
+		return
+	# Which truck.
+	var pick := HFlowContainer.new()
+	pick.add_theme_constant_override("h_separation", 6)
+	for t in trucks:
+		var b := _button(String(t.machine_name).to_upper(), 14)
+		b.toggle_mode = true
+		b.button_pressed = t == _ws_truck
+		b.pressed.connect(func() -> void:
+			_ws_truck = t
+			_ws_setup = (t.tune as Dictionary).duplicate()
+			_fill_workshop())
+		pick.add_child(b)
+	box.add_child(pick)
+	box.add_child(_rule())
+	# The parts.
+	var titles := {"engine": "ENGINE", "gearing": "GEARING", "suspension": "SUSPENSION", "tires": "TYRES", "diff": "DIFFERENTIAL"}
+	for part in Truck.TUNE:
+		box.add_child(_label(titles[part], 13, MUTED, true))
+		var row := HFlowContainer.new()
+		row.add_theme_constant_override("h_separation", 6)
+		var options: Array = Truck.TUNE[part]
+		for k in options.size():
+			var fitted := int(_ws_truck.tune.get(part, 0)) == k
+			var text := String(options[k][0]) + ("" if fitted or int(options[k][1]) == 0 else "  $%s" % _thousands(int(options[k][1]))) + ("  ✓" if fitted else "")
+			var b := _button(text, 14)
+			b.toggle_mode = true
+			b.button_pressed = int(_ws_setup.get(part, 0)) == k
+			b.pressed.connect(func() -> void:
+				_ws_setup[part] = k
+				_fill_workshop())
+			row.add_child(b)
+		box.add_child(row)
+	box.add_child(_rule())
+	var cost: int = Truck.tune_cost(_ws_truck.tune, _ws_setup)
+	var actions := HBoxContainer.new()
+	actions.add_theme_constant_override("separation", 10)
+	var fit := _button("FIT PARTS  ·  $%s" % _thousands(cost) if cost > 0 else "FIT PARTS", 17)
+	fit.disabled = Truck.clean_tune(_ws_setup) == Truck.clean_tune(_ws_truck.tune)
+	fit.pressed.connect(func() -> void:
+		tune_requested.emit(int(_ws_truck.get_meta("net_id")), Truck.clean_tune(_ws_setup))
+		get_tree().create_timer(0.2, true).timeout.connect(_fill_workshop))
+	actions.add_child(fit)
+	actions.add_child(_label("   cash $%s" % _thousands(career.money), 15, GOOD if career.money >= cost else BAD))
+	box.add_child(actions)
+	# Presets.
+	box.add_child(_label("PRESETS", 13, MUTED, true))
+	var save_row := HBoxContainer.new()
+	save_row.add_theme_constant_override("separation", 8)
+	var name_edit := LineEdit.new()
+	name_edit.placeholder_text = "preset name (e.g. Mud runner)"
+	name_edit.custom_minimum_size = Vector2(320, 34)
+	save_row.add_child(name_edit)
+	var save := _button("SAVE THESE PARTS", 14)
+	save.pressed.connect(func() -> void:
+		var preset_name := name_edit.text.strip_edges().substr(0, 24)
+		if preset_name == "":
+			return
+		career.tune_presets[preset_name] = Truck.clean_tune(_ws_setup)
+		career.save_settings()
+		_fill_workshop())
+	save_row.add_child(save)
+	box.add_child(save_row)
+	if not career.tune_presets.is_empty():
+		var list := HFlowContainer.new()
+		list.add_theme_constant_override("h_separation", 6)
+		for preset_name in career.tune_presets:
+			var load := _button(String(preset_name), 14)
+			load.pressed.connect(func() -> void:
+				_ws_setup = Truck.clean_tune(career.tune_presets[preset_name])
+				_fill_workshop())
+			list.add_child(load)
+			var drop := _button("✕", 14)
+			drop.pressed.connect(func() -> void:
+				career.tune_presets.erase(preset_name)
+				career.save_settings()
+				_fill_workshop())
+			list.add_child(drop)
+		box.add_child(list)
+		box.add_child(_label("Pick a preset to load its parts, then FIT PARTS (you pay only for parts that change).", 12, MUTED))
+	box.add_child(back)
+	_focus_first()
 
 
 ## Host a game on this world, or join a friend's (any number of players).

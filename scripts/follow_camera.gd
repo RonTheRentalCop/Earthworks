@@ -115,3 +115,8 @@ func _update_transform() -> void:
 	pos.y = maxf(pos.y, terrain.get_height(pos.x, pos.z) + 0.5)
 	global_position = pos
 	look_at(focus)
+	# A blast nearby shakes the view (main sets "shake"; it dies away).
+	var shake: float = get_meta("shake", 0.0)
+	if shake > 0.01:
+		global_position += Vector3(randf_range(-1, 1), randf_range(-1, 1), randf_range(-1, 1)) * shake * 0.4
+		set_meta("shake", shake * 0.9)

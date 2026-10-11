@@ -90,7 +90,13 @@ the session; your own career is untouched.
   own channel so it never holds up anything else; far-off changes are put in when that ground loads.
 - Windows/macOS may ask to allow the game through the firewall the first time you host.
 
-## The world (1 km × 1 km)
+## The world (1.5 km × 1.5 km)
+The inner square is the original map; the outer ring adds the **open-pit mine** (far south: a
+deep rock bowl with the richest ore and its own crusher), the **badlands** (far east: flat-topped
+rock mesas), the **northern range** (three big rock peaks), the **north-east lake** with an
+island, the **south-west swamp**, and the **redwood grove** (far west, with a logging camp
+shredder). Your fleet and where you're standing are saved with the world.
+
 - **Construction depot** in the middle: fenced yard with a wide 28 m gate under the company gantry, a
   wide haul road out, delivery bays, dispatch board, workshop, offices, fuel station, material bays
   (one of them gravel), container yard, wash bay, light towers. **The yard and the haul road can't be
@@ -165,6 +171,21 @@ the session; your own career is untouched.
 - **Deep swamp mud:** mud in the swamps runs much deeper. Excavators and dozers can crawl through
   if they keep moving, but left standing they sink and get stuck fast; rock them on the tracks
   for a while or winch them out.
+- **Workshop** (pause menu, at the company depot): fit engines (stages 1-3), gearing (low for
+  torque, high for speed), suspension (soft off-road, sport, heavy duty), tyres (road,
+  all-terrain, mud tiers 1-3) and a locked differential to any site truck. You pay only for the
+  parts that change. Save setups as presets and load them onto other trucks.
+- **Explosives truck** ($28,000): press N to drill a hole behind it and plant a charge; charges
+  link up with det cord as you plant more. Get 18 m clear and press B to blow them all in
+  sequence: craters through rock as easily as soil (the rock round them is left fractured and
+  digs easily), spoil thrown out in a rim, loose things knocked about and trees felled.
+- **Gravel** is a real layer now: a truckload covers a patch about as thick as it was, and digging
+  through it reaches soil again (it no longer spreads without end).
+- **Snow** packs down into ruts under wheels and tracks, deeper the heavier the machine; **mud**
+  gives way further under heavy trucks.
+- **Dozers** leak soil round the blade ends into windrows as they push, spill overflow round the
+  ends and over the top, and drop a heap when the blade lifts.
+- **Tracked conveyor** holds 40 m³ and moves 12 m³ a second.
 - **Portable shredder** ($22,000): a tracked shredder you drive to where the trees are coming down.
   Drop, drag or push logs and stumps into the striped infeed at its back; they're shredded and
   paid for on the spot.
@@ -215,7 +236,7 @@ the session; your own career is untouched.
   a full walk/run cycle with knees and elbows (other players' workers animate the same way).
 
 ## Performance
-- The 1 km map is generated in 8 m blocks as you approach; nearby ground is drawn in detail, the rest
+- The 1.5 km map is generated in 8 m blocks as you approach; nearby ground is drawn in detail, the rest
   as a low-detail horizon; physics ground exists only around players, machines and loose objects;
   trees far away are instanced meshes and turn into real trees as you get close.
 - Models are merged per moving part into one mesh with a shared material (colour, roughness and

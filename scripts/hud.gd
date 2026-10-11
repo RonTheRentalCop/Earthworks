@@ -22,7 +22,7 @@ const BAD := Color(0.98, 0.36, 0.28)
 ## [keyboard, controller] labels for each action's key cap.
 const KEYS := {
 	"interact": ["F", "X"], "menu": ["TAB", "VIEW"], "pause": ["ESC", "MENU"], "winch": ["H", "B"],
-	"utility": ["N", "L3"], "view": ["V", "R3"], "handbrake": ["SPACE", "A"], "help": ["F1", "Y"],
+	"utility": ["N", "L3"], "view": ["V", "R3"], "handbrake": ["SPACE", "A"], "help": ["F1", "Y"], "detonate": ["B", "SHARE"],
 	"strap": ["G", "LB"], "rope": ["R", "RB"], "cut_tie": ["X", "B"],
 }
 

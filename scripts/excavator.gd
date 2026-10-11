@@ -309,7 +309,7 @@ func _rut() -> void:
 	var track: Vector2 = (_rig.track as Vector2) * size_scale
 	var fwd := -global_basis.z
 	for side in [-1.0, 1.0]:
-		terrain.press(global_position + global_basis.x * side * track.y, fwd, track.x + 0.2, TRACK_WIDTH * size_scale * 0.5, RUT_DEPTH)
+		terrain.press(global_position + global_basis.x * side * track.y, fwd, track.x + 0.2, TRACK_WIDTH * size_scale * 0.5, RUT_DEPTH, 3.0 * _k * _k)
 
 
 func cycle_attachment() -> String:
@@ -932,7 +932,6 @@ func _dig(delta: float, before: float) -> bool:
 		for local in _rig.carve_points + _rig.block_points:
 			var p := _bucket.to_global(local)
 			if budget > 0.0 and p.y < _ground(p):
-				var gravel := terrain.is_gravel(p.x, p.z)
 				var removed := terrain.dig(p, _dig_radius, budget)
 				_dug += removed
 				bucket_load += removed
@@ -942,8 +941,7 @@ func _dig(delta: float, before: float) -> bool:
 					var g := Ores.grade(Vector2(p.x, p.z), depth, terrain.is_rock(p.x, p.z))
 					bucket_value += removed * g.x
 					bucket_gold += removed * g.x * g.y
-				if gravel:
-					_gravel_in_bucket += removed
+				_gravel_in_bucket += terrain.last_dig_gravel
 				_set_bucket_material(Terrain.SURFACE_GRAVEL if _gravel_in_bucket > bucket_load * 0.5 else Terrain.SURFACE_SOIL)
 				budget -= removed
 	var after := _penetration()

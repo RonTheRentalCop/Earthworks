@@ -61,11 +61,21 @@ const HILLS: Array[Vector4] = [Vector4(-90, 430, 70, 14), Vector4(390, 370, 55, 
 	Vector4(130, -430, 70, 11), Vector4(440, 250, 45, 8), Vector4(-470, 330, 40, 9)]
 ## Rock mountains: (x, z, radius, height). Bare rock above the lower slopes, a quarter as
 ## fast to dig or doze as soil.
-const MOUNTAINS: Array[Vector4] = [Vector4(-440, -430, 95, 42), Vector4(450, -460, 100, 48), Vector4(-470, 40, 75, 34)]
+const MOUNTAINS: Array[Vector4] = [Vector4(-440, -430, 95, 42), Vector4(450, -460, 100, 48), Vector4(-470, 40, 75, 34),
+	# The northern range (outer map): three big peaks with passes between them.
+	Vector4(-330, -655, 95, 46), Vector4(-60, -690, 85, 40), Vector4(230, -660, 100, 52)]
+## The badlands (far east): flat-topped rock mesas (x, z, radius, height).
+const MESAS: Array[Vector4] = [Vector4(650, 120, 45, 18), Vector4(700, -70, 34, 14), Vector4(620, 290, 40, 16),
+	Vector4(705, 430, 30, 12), Vector4(600, -230, 32, 11)]
+## The open-pit mine (far south): a huge rock bowl with the richest ore on the map, and a
+## crusher on its rim. (x, z, radius, depth)
+const MINE := Vector4(0, 640, 75, 18)
+const MINE_CRUSHER := [Vector2(105, 610), PI * 0.5]
 ## Lakes: (x, z, radius). The first is fed by the stream and drains into the river.
-const LAKES: Array[Vector3] = [Vector3(-72, -58, 24), Vector3(255, -80, 42), Vector3(-200, -400, 30)]
+const LAKES: Array[Vector3] = [Vector3(-72, -58, 24), Vector3(255, -80, 42), Vector3(-200, -400, 30),
+	Vector3(600, -610, 62)]  # (the last: the north-east lake, with an island)
 ## Swamps: (x, z, radius) of soft, sinking ground and standing pools.
-const SWAMPS: Array[Vector3] = [Vector3(-320, 260, 150), Vector3(320, -300, 110)]
+const SWAMPS: Array[Vector3] = [Vector3(-320, 260, 150), Vector3(320, -300, 110), Vector3(-590, 600, 125)]
 const QUARRY := Vector2(240, 330)
 const FARM := Vector2(190, 210)
 ## The snowy pine forest in the east (x, z, radius) and its frozen pond.
@@ -73,6 +83,7 @@ const SNOWFIELD := Vector3(330, 140, 140)
 const ICE_POND := Vector3(362, 178, 20)
 ## Shredders: position and yaw (the infeed faces the yaw's -Z).
 const SHREDDERS := [[Vector2(-26, 62), -PI * 0.5], [Vector2(40, -90), PI * 0.5], [Vector2(-200, 150), PI * 0.5],
+	[Vector2(-545, -40), PI * 0.5],  # (the redwood grove's logging camp)
 	[Vector2(-235, -215), PI * 0.5], [Vector2(215, 60), -PI * 0.5]]
 ## Forests: [centre, radius, trees, species weights (pine, pine, gold broadleaf, green
 ## broadleaf, swamp cypress, giant oak), swamp forest?]
@@ -88,6 +99,12 @@ const FORESTS := [
 	[Vector2(-420, 40), 45.0, 100, [2, 1, 1, 1, 0, 0], false], [Vector2(420, -60), 40.0, 90, [1, 2, 0, 1, 0, 0], false],
 	[Vector2(-200, 420), 40.0, 80, [0, 1, 1, 2, 0, 1], false], [Vector2(430, 430), 45.0, 90, [2, 2, 0, 1, 0, 0], false],
 	[Vector2(-440, -440), 40.0, 80, [1, 1, 1, 1, 0, 2], false], [Vector2(300, 460), 35.0, 60, [2, 1, 1, 1, 0, 0], false],
+	# Outer map: the redwood grove (west), the north woods, the south-west swamp, round the
+	# north-east lake, and scattered trees in the badlands and round the mine.
+	[Vector2(-640, -60), 105.0, 300, [1, 1, 0, 0, 0, 1, 5, 0], false], [Vector2(-120, -560), 110.0, 260, [3, 3, 1, 1, 0, 1], false],
+	[Vector2(-590, 600), 120.0, 300, [0, 0, 0, 1, 6, 0], true], [Vector2(560, -500), 70.0, 150, [2, 2, 1, 2, 0, 1], false],
+	[Vector2(640, 180), 110.0, 70, [1, 1, 2, 0, 0, 1], false], [Vector2(-190, 650), 70.0, 120, [1, 1, 1, 2, 0, 1], false],
+	[Vector2(320, 650), 80.0, 160, [2, 1, 1, 1, 0, 1], false], [Vector2(-650, 330), 70.0, 140, [1, 2, 1, 1, 0, 1], false],
 ]
 const ENTER_DISTANCE := 3.2
 ## Network ids: rubble blocks are 0.., logs and stumps start here.
@@ -131,6 +148,11 @@ var shredders: Array = []
 var updater: Node
 var tip: Node3D
 var _wood_text := ""
+## Planted explosive charges (host keeps the list; everyone draws them), linked in order.
+var charges: Array = []
+var _charge_view: Node3D
+const MAX_CHARGES := 30
+const SAFE_DISTANCE := 18.0
 var _wood_timer := 0.0
 ## The starting fleet (and the test fleet), for the automated checks.
 var excavator: Excavator
@@ -213,6 +235,19 @@ func _ready() -> void:
 			var at := mc + Vector2.from_angle(k * TAU / 6.0 + crag_rng.randf() * 0.6) * mountain.z * crag_rng.randf_range(0.2, 0.45)
 			terrain.add_mound(at, mountain.z * crag_rng.randf_range(0.3, 0.45), mountain.w * crag_rng.randf_range(0.2, 0.35))
 		terrain.paint_rock(mc, mountain.z * 0.8)
+	# Mesas: steep rock sides, flat tops.
+	for mesa in MESAS:
+		var ec := Vector2(mesa.x, mesa.y)
+		var base := terrain.sample_height(ec.x, ec.y)
+		terrain.add_mound(ec, mesa.z, mesa.w * 1.6)
+		terrain.flatten(ec, Vector2.ONE * mesa.z * 0.3, mesa.z * 0.25, base + mesa.w)
+		terrain.paint_rock(ec, mesa.z * 0.95)
+	# The open-pit mine: a deep rock bowl with a flat floor.
+	var mine_c := Vector2(MINE.x, MINE.y)
+	terrain.add_mound(mine_c, MINE.z, -MINE.w)
+	terrain.flatten(mine_c, Vector2.ONE * MINE.z * 0.22, MINE.z * 0.2, terrain.sample_height(mine_c.x, mine_c.y))
+	terrain.paint_rock(mine_c, MINE.z * 1.05)
+	Ores.hotspots = [Vector4(MINE.x, MINE.y, MINE.z * 1.6, 2.5)]
 	terrain.deep_zones = SWAMPS
 	for pit in MUD_PITS:
 		terrain.add_mound(Vector2(pit.x, pit.y), pit.z, -0.5)
@@ -225,6 +260,8 @@ func _ready() -> void:
 		terrain.raise_ring(at, lake.z - 1.0, lake.z + 6.0, level + 0.5)
 		terrain.clear_grass(at, lake.z + 2.0)
 		lake_levels.append(level)
+		if lake.z > 50.0:
+			terrain.add_mound(at + Vector2(8, -6), lake.z * 0.28, 9.5)  # an island
 	var lake_level: float = lake_levels[0]
 	# Main river: meanders down the east side of the whole map, north to south.
 	var river := PackedVector2Array()
@@ -321,6 +358,8 @@ func _ready() -> void:
 	terrain.paint_ice(Vector2(ICE_POND.x, ICE_POND.y), ICE_POND.z)
 	terrain.flatten(CRUSHER[0], Vector2(12, 12), 4.0)
 	terrain.protect(CRUSHER[0], Vector2(11, 11))
+	terrain.flatten(MINE_CRUSHER[0], Vector2(12, 12), 4.0)
+	terrain.protect(MINE_CRUSHER[0], Vector2(11, 11))
 	terrain.flatten(TIP[0], Vector2(8, 8), 4.0)
 	terrain.protect(TIP[0], Vector2(7, 7))
 	terrain.finalize()
@@ -397,6 +436,18 @@ func _ready() -> void:
 	var crusher_index := shredders.size()
 	crusher.feeding.connect(func(body: RigidBody3D) -> void: net.send_shred(crusher_index, int(body.get_meta("body_id", -1))))
 	shredders.append(crusher)
+	# A second crusher on the mine's rim.
+	var mine_crusher := Shredder.new()
+	mine_crusher.accepts = "ore"
+	mine_crusher.machine_name = "Mine crusher"
+	mine_crusher.position = Vector3(MINE_CRUSHER[0].x, terrain.get_height(MINE_CRUSHER[0].x, MINE_CRUSHER[0].y), MINE_CRUSHER[0].y)
+	mine_crusher.rotation.y = MINE_CRUSHER[1]
+	mine_crusher.remote = joining
+	add_child(mine_crusher)
+	mine_crusher.shredded.connect(_on_shredded)
+	var mine_index := shredders.size()
+	mine_crusher.feeding.connect(func(body: RigidBody3D) -> void: net.send_shred(mine_index, int(body.get_meta("body_id", -1))))
+	shredders.append(mine_crusher)
 	_refresh_receivers()
 	_build_forests(rng)
 	Scenery.tree_ring(self, Terrain.HALF_SIZE + 3.0, Terrain.HALF_SIZE + 70.0, 4200)
@@ -475,6 +526,7 @@ func _ready() -> void:
 	menu.join_requested.connect(_on_join_requested)
 	menu.host_online_requested.connect(_on_host_online_requested)
 	menu.join_code_requested.connect(_on_join_code_requested)
+	menu.tune_requested.connect(func(id: int, setup: Dictionary) -> void: _request(1, "tune", [id, setup]))
 	menu.leave_requested.connect(func() -> void: net.leave())
 	net.players_changed.connect(_on_players_changed)
 	# From here on every change to the ground is kept for the world save; put the saved
@@ -901,6 +953,74 @@ func spawn_vehicle(kind: String) -> Node3D:
 	return node
 
 
+## Fits a workshop setup to a truck.
+func apply_tune(node: Node3D, setup) -> void:
+	if node is Truck and setup is Dictionary:
+		node.apply_tune(setup)
+
+
+## The workshop is at the company depot: you (or the truck you're in) must be in the yard.
+func at_depot() -> bool:
+	var p := focus_node().global_position
+	return absf(p.x - ZONE.x) < Scenery.ZONE_HALF.x + 12.0 and absf(p.z - ZONE.y) < Scenery.ZONE_HALF.y + 12.0
+
+
+## What a machine was carrying or set to, for the world save.
+func vehicle_extra(v: Node3D) -> Dictionary:
+	var extra := {}
+	if v is Truck:
+		extra = {"payload": v.payload, "value": v.payload_value, "gold": v.payload_gold, "material": v.material}
+	elif v is Excavator:
+		extra = {"attachment": v.attachment}
+	elif v is Forge:
+		extra = {"hopper": v.hopper, "value": v.hopper_value, "gold_in": v.hopper_gold, "gold": v.gold_metal, "silver": v.silver_metal}
+	elif v is Roller:
+		extra = {"level": v.level}
+	if v.has_meta("tune"):
+		extra["tune"] = v.get_meta("tune")
+	return extra
+
+
+## Puts the saved fleet back where it was left (instead of the starting fleet).
+func restore_fleet(list: Array) -> void:
+	for v in machines.duplicate() + trailers.duplicate():
+		despawn(v)
+	excavator = null
+	dozer = null
+	truck = null
+	for entry in list:
+		var kind := String(entry[0])
+		var node := _create_vehicle(kind)
+		node.transform = entry[1]
+		add_child(node)
+		if kind == "trailer" or kind == "log_trailer" or kind == "flatbed":
+			trailers.append(node)
+		_register_vehicle(node, next_net_id, kind)
+		next_net_id += 1
+		var extra: Dictionary = entry[2] if entry.size() > 2 else {}
+		if extra.has("tune"):
+			apply_tune(node, extra.tune)
+		if node is Truck and float(extra.get("payload", 0.0)) > 0.0:
+			node.add_soil(float(extra.payload), int(extra.get("material", 0)))
+			node.add_value(float(extra.get("value", 0.0)), float(extra.get("gold", 0.0)))
+		elif node is Excavator and int(extra.get("attachment", 0)) in node.allowed_attachments:
+			node.set_attachment(int(extra.attachment))
+		elif node is Forge:
+			node.hopper = float(extra.get("hopper", 0.0))
+			node.hopper_value = float(extra.get("value", 0.0))
+			node.hopper_gold = float(extra.get("gold_in", 0.0))
+			node.gold_metal = float(extra.get("gold", 0.0))
+			node.silver_metal = float(extra.get("silver", 0.0))
+		elif node is Roller:
+			node.level = float(extra.get("level", node.level))
+		if excavator == null and kind == "excavator":
+			excavator = node
+		elif dozer == null and kind == "dozer":
+			dozer = node
+		elif truck == null and kind == "dump":
+			truck = node
+
+
 ## A broken-down truck (job vehicle) sunk in mud at `at`.
 func spawn_broken_truck(at: Vector3) -> Truck:
 	var t := Truck.new()
@@ -1047,6 +1167,21 @@ func remote_request(peer: int, action: String, arg: Variant) -> void:
 	var who: String = String(net.players[peer].name) if net.players.has(peer) and net.is_online() else ""
 	var by := ("  ·  " + who) if who != "" and net.players.size() > 1 else ""
 	match action:
+		"detonate":
+			detonate(peer)
+		"tune":
+			# [vehicle id, setup]: the workshop fits the parts if the company can pay.
+			var v := vehicle_by_id(int(arg[0]))
+			if v is Truck and not v.broken:
+				var setup: Dictionary = Truck.clean_tune(arg[1])
+				var cost := Truck.tune_cost(v.tune, setup)
+				if cost > career.money:
+					net.toast(peer, "The workshop needs $%d for that (you have $%d)" % [cost, career.money], Hud.BAD)
+				else:
+					if cost > 0:
+						career.earn(-cost, "Workshop: " + String(v.machine_name))
+					v.apply_tune(setup)
+					net.toast(peer, "WORKSHOP  ·  %s fitted%s" % [String(v.machine_name).to_upper(), (" for $%d" % cost) if cost > 0 else ""], Hud.GOOD)
 		"enter":
 			var v := vehicle_by_id(int(arg))
 			if v and v in machines:
@@ -1295,6 +1430,154 @@ func grind_at(at: Vector3, reach: float, by: Node3D) -> void:
 	career.earn(value, "Ground up %d stump%s" % [count, "" if count == 1 else "s"])
 
 
+## Drills a hole and plants a charge in it, linked to the last one (host).
+func plant_charge(at: Vector3) -> String:
+	if charges.size() >= MAX_CHARGES:
+		return "That's all the charges the truck carries (%d): blow them first" % MAX_CHARGES
+	for c in charges:
+		if (c as Vector3).distance_to(at) < 2.0:
+			return "There's a charge right here already: move along a bit"
+	charges.append(at)
+	_draw_charges()
+	net.send_charges(charges)
+	return "CHARGE %d PLANTED and linked  ·  plant more, then get %d m clear and press %s to blow them all" % [charges.size(), roundi(SAFE_DISTANCE), hud.key("detonate")]
+
+
+## Sets off every charge (host): one after another down the cord.
+func detonate(peer: int) -> void:
+	if charges.is_empty():
+		net.toast(peer, "No charges planted (drive the explosives truck and press %s to drill one)" % hud.key("utility"))
+		return
+	# Whoever pressed it (or what they're driving) must be well clear.
+	var who: Node3D = focus_node()
+	if peer != 1 and net.players.has(peer):
+		var driving_id := int(net.players[peer].get("driving", -1))
+		who = vehicle_by_id(driving_id) if driving_id >= 0 else net._puppet_for(peer)
+	if who == null:
+		who = player
+	for c in charges:
+		if who.global_position.distance_to(c) < SAFE_DISTANCE:
+			net.toast(peer, "TOO CLOSE!  Get at least %d m from every charge first" % roundi(SAFE_DISTANCE), Hud.BAD)
+			return
+	var list := charges.duplicate()
+	charges.clear()
+	_draw_charges()
+	net.send_charges(charges)
+	net.toast_all("FIRE IN THE HOLE!", Hud.BAD)
+	for k in list.size():
+		var at: Vector3 = list[k]
+		get_tree().create_timer(0.6 + k * 0.12).timeout.connect(func() -> void: _blow(at))
+
+
+func _blow(at: Vector3) -> void:
+	terrain.blast(at, 3.4, 2.6)
+	net.send_blast(at)
+	blast_effect(at)
+	# The shock knocks loose things about and fells trees close by.
+	for id in bodies:
+		var b = bodies[id]
+		if is_instance_valid(b) and b is RigidBody3D and not b.freeze and b.global_position.distance_to(at) < 12.0:
+			var away: Vector3 = (b.global_position - at)
+			b.apply_central_impulse((away.normalized() + Vector3.UP) * b.mass * clampf(12.0 / maxf(away.length(), 1.0), 0.5, 6.0))
+	for c in forests._cells_around(Vector2(at.x, at.z), 7.0):
+		for tid in forests.cells[c]:
+			var tp: Vector3 = forests.pos[tid]
+			if forests.state[tid] == 0 and Vector2(tp.x - at.x, tp.z - at.z).length() < 7.0:
+				forests.apply_event(tid, "fell", self)
+
+
+## The flash, fireball and dust of a charge going off (everyone sees it).
+func blast_effect(at: Vector3) -> void:
+	var fx := GPUParticles3D.new()
+	fx.amount = 70
+	fx.lifetime = 2.2
+	fx.one_shot = true
+	fx.explosiveness = 0.95
+	var process := ParticleProcessMaterial.new()
+	process.direction = Vector3(0, 1, 0)
+	process.spread = 55.0
+	process.initial_velocity_min = 6.0
+	process.initial_velocity_max = 16.0
+	process.gravity = Vector3(0, -9.0, 0)
+	process.scale_min = 0.6
+	process.scale_max = 2.2
+	process.color_ramp = MachineFx_ramp()
+	fx.process_material = process
+	var puff := SphereMesh.new()
+	puff.radius = 0.5
+	puff.height = 1.0
+	puff.radial_segments = 6
+	puff.rings = 3
+	var mat := StandardMaterial3D.new()
+	mat.vertex_color_use_as_albedo = true
+	mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+	mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+	puff.material = mat
+	fx.draw_pass_1 = puff
+	add_child(fx)
+	fx.global_position = at + Vector3(0, 0.5, 0)
+	fx.emitting = true
+	fx.finished.connect(fx.queue_free)
+	var flash := OmniLight3D.new()
+	flash.light_color = Color(1.0, 0.7, 0.3)
+	flash.light_energy = 12.0
+	flash.omni_range = 30.0
+	add_child(flash)
+	flash.global_position = at + Vector3(0, 2.0, 0)
+	get_tree().create_timer(0.15).timeout.connect(flash.queue_free)
+	if camera and camera.global_position.distance_to(at) < 120.0:
+		camera.set_meta("shake", 0.6)
+
+
+static func MachineFx_ramp() -> GradientTexture1D:
+	var g := Gradient.new()
+	g.set_color(0, Color(1.0, 0.85, 0.4, 1.0))
+	g.set_color(1, Color(0.35, 0.3, 0.26, 0.0))
+	g.add_point(0.12, Color(1.0, 0.45, 0.1, 0.95))
+	g.add_point(0.35, Color(0.45, 0.38, 0.3, 0.8))
+	var tex := GradientTexture1D.new()
+	tex.gradient = g
+	return tex
+
+
+## Draws the planted charges and the det cord linking them.
+func _draw_charges() -> void:
+	if _charge_view:
+		_charge_view.queue_free()
+	_charge_view = Node3D.new()
+	add_child(_charge_view)
+	if charges.is_empty():
+		return
+	var orange := Kit.glow(Color(1.0, 0.45, 0.05), 1.5)
+	for c in charges:
+		var post := MeshInstance3D.new()
+		post.mesh = Kit.cylinder(0.09, 0.7, 8)
+		post.material_override = orange
+		_charge_view.add_child(post)
+		post.global_position = (c as Vector3) + Vector3(0, 0.35, 0)
+	if charges.size() < 2:
+		return
+	var cord := ImmediateMesh.new()
+	cord.surface_begin(Mesh.PRIMITIVE_LINES)
+	for k in charges.size() - 1:
+		cord.surface_add_vertex((charges[k] as Vector3) + Vector3(0, 0.08, 0))
+		cord.surface_add_vertex((charges[k + 1] as Vector3) + Vector3(0, 0.08, 0))
+	cord.surface_end()
+	var line := MeshInstance3D.new()
+	line.mesh = cord
+	var red := StandardMaterial3D.new()
+	red.albedo_color = Color(0.9, 0.15, 0.1)
+	red.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+	line.material_override = red
+	_charge_view.add_child(line)
+
+
+## Joining player: the host's charges.
+func net_charges(list: Array) -> void:
+	charges = list
+	_draw_charges()
+
+
 ## Joining player: the host cleared these away.
 func net_remove_bodies(ids: Array) -> void:
 	for id in ids:
@@ -1501,6 +1784,8 @@ func _process(delta: float) -> void:
 		_handle_ties()
 	elif not _tie_pending.is_empty():
 		_cancel_tie()
+	if Input.is_action_just_pressed("detonate") and menu and not menu.is_open and not charges.is_empty():
+		_request(1, "detonate", 0)
 	if Input.is_action_just_pressed("restart") and not net.is_online():
 		save_world()
 		get_tree().reload_current_scene()
@@ -1646,6 +1931,8 @@ func _use_utility(machine: Node3D, peer: int) -> void:
 		net.toast(peer, machine.toggle_levelling())
 	elif machine is Bulldozer:
 		net.toast(peer, machine.toggle_grinder())
+	elif machine is Truck and machine.kind == "blaster":
+		net.toast(peer, plant_charge(machine.drill_point()))
 	elif machine is Truck:
 		var t: Truck = machine
 		# The end of the train: the truck itself, or the last trailer behind it.
@@ -1753,6 +2040,8 @@ func _utility_label(machine: Node3D) -> String:
 		return "Levelling on/off"
 	if machine is Bulldozer:
 		return "Grinder on/off"
+	if machine is Truck and machine.kind == "blaster":
+		return "Drill & plant charge"
 	return ""
 
 

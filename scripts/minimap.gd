@@ -8,9 +8,9 @@ extends Control
 const Terrain = preload("res://scripts/terrain.gd")
 
 const VIEWS := [110.0, 420.0]  # metres shown across the map
-const SIZE := 1024  # 1 pixel per metre
+const SIZE := 1536  # 1 pixel per metre
 const BLOCK := 32
-const BLOCKS := 32  # SIZE / BLOCK
+const BLOCKS := 48  # SIZE / BLOCK
 const PAINTS_PER_FRAME := 3
 
 var main: Node3D

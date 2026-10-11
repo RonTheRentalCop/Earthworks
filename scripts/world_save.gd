@@ -8,7 +8,7 @@ extends RefCounted
 const PATH := "user://earthworks_world.save"
 ## Where it's written (tests point this elsewhere so they never touch your save).
 static var path := PATH
-const VERSION := 2
+const VERSION := 3  # (3: the 1.5 km map)
 
 
 ## Writes the save (safely: to a temporary file first, then swapped in).
@@ -47,9 +47,15 @@ static func save(main: Node) -> bool:
 			mats.append(b.global_transform)
 		elif is_instance_valid(b) and b.has_meta("ore") and int(id) >= main.FIRST_DYNAMIC_ID and b.is_inside_tree():
 			ores.append([b.get_meta("ore"), b.global_transform])
+	# The fleet, where it was left (job trucks that broke down aren't yours to keep).
+	var vehicles := []
+	for v in main.machines + main.trailers:
+		if is_instance_valid(v) and v.is_inside_tree() and not v.get("broken"):
+			vehicles.append([String(v.get_meta("kind", "dump")), v.global_transform, main.vehicle_extra(v)])
 	var data := {
 		"version": VERSION, "cells": terrain.CELLS, "trees": forests.count(),
 		"terrain": chunks, "tree_state": forests.state, "logs": logs, "debris": debris, "mats": mats, "ores": ores,
+		"vehicles": vehicles, "player": main.player.global_transform,
 	}
 	var raw := var_to_bytes(data)
 	var packed := raw.compress(FileAccess.COMPRESSION_ZSTD)
@@ -150,4 +156,8 @@ static func restore(main: Node) -> bool:
 			var id: int = main.next_body_id
 			main.next_body_id += 1
 			main._register_body(main.make_mat(xform), id)
+	if data.has("vehicles") and not (data.vehicles as Array).is_empty():
+		main.restore_fleet(data.vehicles)
+	if data.get("player") is Transform3D:
+		main.player.global_transform = data.player
 	return true
