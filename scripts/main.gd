@@ -32,6 +32,8 @@ const Roller = preload("res://scripts/roller.gd")
 const Updater = preload("res://scripts/updater.gd")
 const MobileShredder = preload("res://scripts/mobile_shredder.gd")
 const Tip = preload("res://scripts/tip.gd")
+const Helicopter = preload("res://scripts/helicopter.gd")
+const Rocket = preload("res://scripts/rocket.gd")
 const Forge = preload("res://scripts/forge.gd")
 const Ties = preload("res://scripts/ties.gd")
 const Ores = preload("res://scripts/ores.gd")
@@ -148,6 +150,10 @@ var shredders: Array = []
 var updater: Node
 var tip: Node3D
 var _wood_text := ""
+var _return_after_exit := false
+var _fire_cooldown := 0.0
+## The truck we're riding in as a passenger (someone else is driving).
+var _riding: Node3D
 ## Planted explosive charges (host keeps the list; everyone draws them), linked in order.
 var charges: Array = []
 var _charge_view: Node3D
@@ -895,6 +901,10 @@ func _create_vehicle(kind: String) -> Node3D:
 			var fb := Trailer.new()
 			fb.variant = "flatbed"
 			return fb
+		"heli":
+			var hc := Helicopter.new()
+			hc.terrain = terrain
+			return hc
 		"forge":
 			var fg := Forge.new()
 			fg.terrain = terrain
@@ -953,6 +963,37 @@ func spawn_vehicle(kind: String) -> Node3D:
 	return node
 
 
+## While a menu is open in a multiplayer game (no pause): hold the worker and the machine
+## you're driving still, and give them back after.
+func hold_controls(hold: bool) -> void:
+	player.input_paused = hold
+	if _driving and not net.is_client():
+		_driving.driven = not hold
+
+
+## Back to the company depot on foot (climbs out of the machine first; it stays put).
+func return_to_site() -> void:
+	if _riding:
+		if net.is_client():
+			_return_after_exit = true
+			_leave_passenger_seat()
+			return
+		_leave_passenger_seat()
+	if _driving:
+		if net.is_client():
+			_return_after_exit = true  # (the host lets us out first; then we go)
+			_leave_machine()
+			return
+		_leave_machine()
+	var p := PLAYER_SPAWN
+	player.global_position = Vector3(p.x, terrain.get_height(p.x, p.y) + 0.1, p.y)
+	player.velocity = Vector3.ZERO
+	player.reset_physics_interpolation()
+	terrain.prepare_around(player.global_position)
+	_update_anchors()
+	hud.toast("Back at the depot", Hud.MUTED)
+
+
 ## Fits a workshop setup to a truck.
 func apply_tune(node: Node3D, setup) -> void:
 	if node is Truck and setup is Dictionary:
@@ -981,6 +1022,12 @@ func vehicle_extra(v: Node3D) -> Dictionary:
 	return extra
 
 
+## True if this version knows how to build machines of `kind`.
+func can_create(kind: String) -> bool:
+	return kind in Truck.KINDS or kind in ["excavator", "excavator_xl", "dozer", "dozer_angle", "dozer_xl", "dozer_angle_xl",
+		"dozer_carry", "trailer", "log_trailer", "flatbed", "conveyor", "roller", "roller_xl", "mobile_shredder", "forge", "heli"]
+
+
 ## Puts the saved fleet back where it was left (instead of the starting fleet).
 func restore_fleet(list: Array) -> void:
 	for v in machines.duplicate() + trailers.duplicate():
@@ -990,6 +1037,8 @@ func restore_fleet(list: Array) -> void:
 	truck = null
 	for entry in list:
 		var kind := String(entry[0])
+		if not can_create(kind):
+			continue  # (a machine this version doesn't have)
 		var node := _create_vehicle(kind)
 		node.transform = entry[1]
 		add_child(node)
@@ -1167,6 +1216,10 @@ func remote_request(peer: int, action: String, arg: Variant) -> void:
 	var who: String = String(net.players[peer].name) if net.players.has(peer) and net.is_online() else ""
 	var by := ("  ·  " + who) if who != "" and net.players.size() > 1 else ""
 	match action:
+		"fire":
+			var shooter := vehicle_by_id(int(net.players[peer].driving)) if net.players.has(peer) else null
+			if shooter is Helicopter:
+				shooter.fire()
 		"detonate":
 			detonate(peer)
 		"tune":
@@ -1264,7 +1317,13 @@ func remote_request(peer: int, action: String, arg: Variant) -> void:
 func remote_enter(peer: int, v: Node3D) -> void:
 	var id := int(v.get_meta("net_id"))
 	if net.driver_of(id) != 0 or v == _driving:
-		net.toast(peer, "Someone's already driving the " + String(v.machine_name).to_lower(), Hud.BAD)
+		# Taken: ride along in the passenger seat if it's free.
+		if v.get("passenger_seat") and net.rider_of(id) == 0 and net.driver_of(id) != peer:
+			remote_exit(peer)
+			net.set_rider(peer, id)
+			net.toast(peer, "Riding along in the " + String(v.machine_name).to_lower())
+		else:
+			net.toast(peer, "Someone's already driving the " + String(v.machine_name).to_lower(), Hud.BAD)
 		return
 	remote_exit(peer)
 	v.driven = true
@@ -1279,6 +1338,9 @@ func remote_enter(peer: int, v: Node3D) -> void:
 ## Host: a remote player gets out (or left the game).
 func remote_exit(peer: int) -> void:
 	if not net.players.has(peer):
+		return
+	if int(net.players[peer].get("riding", -1)) >= 0:
+		net.set_rider(peer, -1)  # a passenger just hops out
 		return
 	var v := vehicle_by_id(int(net.players[peer].driving))
 	if v:
@@ -1309,10 +1371,61 @@ func client_enter(v: Node3D) -> void:
 	_seat_player(v)
 
 
+## Joining player: the host put us in (or out of) a passenger seat.
+func client_ride(v: Node3D) -> void:
+	if v:
+		_start_riding(v)
+	else:
+		_stop_riding()
+		if _return_after_exit:
+			_return_after_exit = false
+			return_to_site()
+
+
+func _start_riding(v: Node3D) -> void:
+	_riding = v
+	player.set_active(false)
+	player.sit(v.passenger_seat)
+	camera.set_target(v.cab, true, 10.0 if v.get("kind") == "pickup" else 16.0)
+	camera.mouse_orbit = true
+
+
+func _stop_riding() -> void:
+	if not _riding:
+		return
+	var v := _riding
+	_riding = null
+	camera.eye = null
+	player.stand()
+	if is_instance_valid(v):
+		# Out the passenger door, on the far side from the driver's.
+		var outward: Vector3 = (v.passenger_seat.global_position - v.seat.global_position)
+		outward.y = 0.0
+		var side := outward.normalized() if outward.length() > 0.1 else v.global_basis.x
+		var p: Vector3 = v.passenger_seat.global_position + side * 1.6
+		player.global_position = Vector3(p.x, terrain.get_height(p.x, p.z) + 0.1, p.z)
+		player.reset_physics_interpolation()
+	player.set_active(true)
+	camera.set_target(player, false, 7.0)
+	hud.set_mode(false)
+
+
+## Gets out of the passenger seat (asks the host first when we've joined a game).
+func _leave_passenger_seat() -> void:
+	if net.is_client():
+		net.request("exit")
+	else:
+		net.set_rider(1, -1)
+		_stop_riding()
+
+
 func client_exit() -> void:
 	if _driving:
 		_unseat_player(_driving)
 	_driving = null
+	if _return_after_exit:
+		_return_after_exit = false
+		return_to_site()
 
 
 # --- Economy ------------------------------------------------------------------------------
@@ -1428,6 +1541,93 @@ func grind_at(at: Vector3, reach: float, by: Node3D) -> void:
 		return
 	net.send_removed(gone)
 	career.earn(value, "Ground up %d stump%s" % [count, "" if count == 1 else "s"])
+
+
+## A rocket leaves a helicopter's pod (host; joining players get a harmless copy to watch).
+func launch_rocket(from: Vector3, velocity: Vector3, shooter: Node3D) -> Node3D:
+	var r := Rocket.new()
+	r.velocity = velocity
+	r.shooter = shooter
+	r.main = self
+	r.harmless = net.is_client()
+	add_child(r)
+	r.global_position = from
+	if not net.is_client():
+		net.send_rocket(from, velocity, int(shooter.get_meta("net_id", -1)))
+	return r
+
+
+## Joining player: the host fired a rocket.
+func net_rocket(from: Vector3, velocity: Vector3, shooter_id: int) -> void:
+	var r := Rocket.new()
+	r.velocity = velocity
+	r.shooter = vehicle_by_id(shooter_id)
+	r.main = self
+	r.harmless = true
+	add_child(r)
+	r.global_position = from
+
+
+## A rocket goes off (host): a crater, the blast, and damage to machines nearby (a direct
+## hit worst). Loose things are thrown about and trees close by come down.
+func explode(at: Vector3, struck: Node, shooter: Node3D) -> void:
+	terrain.blast(at, 2.4, 1.6)
+	net.send_blast(at)
+	blast_effect(at)
+	for v in machines + trailers:
+		if not is_instance_valid(v) or v == shooter:
+			continue
+		var d: float = v.global_position.distance_to(at)
+		var hit: float = 45.0 if v == struck else 0.0
+		if d < 8.0 or hit > 0.0:
+			damage_vehicle(v, hit + 75.0 * clampf(1.0 - d / 8.0, 0.0, 1.0))
+	for id in bodies:
+		var b = bodies[id]
+		if is_instance_valid(b) and b is RigidBody3D and not b.freeze and b.global_position.distance_to(at) < 8.0:
+			var away: Vector3 = b.global_position - at
+			b.apply_central_impulse((away.normalized() + Vector3.UP) * b.mass * clampf(8.0 / maxf(away.length(), 1.0), 0.5, 5.0))
+	for c in forests._cells_around(Vector2(at.x, at.z), 4.0):
+		for tid in forests.cells[c]:
+			var tp: Vector3 = forests.pos[tid]
+			if forests.state[tid] == 0 and Vector2(tp.x - at.x, tp.z - at.z).length() < 4.0:
+				forests.apply_event(tid, "fell", self)
+
+
+## Takes `amount` off a machine's health (100 to start); at none it's wrecked: a truck's
+## engine dies (tow it back to the depot), a tracked machine or helicopter is out of action.
+func damage_vehicle(v: Node3D, amount: float) -> void:
+	if net.is_client() or v.has_meta("wrecked"):
+		return
+	var health: float = float(v.get_meta("health", 100.0)) - amount
+	v.set_meta("health", health)
+	if health > 0.0:
+		return
+	wreck_vehicle(v)
+	net.send_wreck(int(v.get_meta("net_id", -1)))
+	net.toast_all("%s DESTROYED" % String(v.machine_name).to_upper(), Hud.BAD)
+
+
+## Marks a machine wrecked (everyone): it smokes and won't drive again.
+func wreck_vehicle(v: Node3D) -> void:
+	if not is_instance_valid(v) or v.has_meta("wrecked"):
+		return
+	v.set_meta("wrecked", true)
+	if v is Helicopter:
+		v.wreck()
+		return
+	if v.get("broken") != null:
+		v.broken = true
+	if "machine_name" in v:
+		v.machine_name = "Wrecked " + String(v.machine_name).to_lower()
+	if v == _driving and not v is Truck:
+		_leave_machine()
+	if not v is Truck:
+		v.driven = false
+		v.set_physics_process(false)
+	var smoke := Helicopter.MachineFx_smoke()
+	v.add_child(smoke)
+	smoke.position = Vector3(0, 2.4, 0)
+	smoke.emitting = true
 
 
 ## Drills a hole and plants a charge in it, linked to the last one (host).
@@ -1808,6 +2008,14 @@ func _process(delta: float) -> void:
 			if d < ramp_best:
 				ramp_best = d
 				at_ramps = t
+	if _riding:
+		if not is_instance_valid(_riding):
+			_stop_riding()
+		else:
+			hud.set_prompt("interact", "GET OUT  ·  riding in the " + String(_riding.machine_name).to_upper())
+			if Input.is_action_just_pressed("interact") and not menu.is_open:
+				_leave_passenger_seat()
+			return
 	if Input.is_action_just_pressed("interact"):
 		if _driving:
 			_leave_machine()
@@ -1817,11 +2025,18 @@ func _process(delta: float) -> void:
 			else:
 				at_ramps.toggle_ramps()
 				hud.toast(_ramps_message(at_ramps))
+		elif nearest and nearest.has_meta("wrecked") and not nearest is Truck:
+			hud.toast("The %s is wrecked: return it to the depot (depot menu) for a new one" % String(nearest.machine_name).to_lower(), Hud.BAD)
 		elif nearest:
 			if net.is_client():
 				net.request("enter", int(nearest.get_meta("net_id")))
 			elif net.driver_of(int(nearest.get_meta("net_id"))) > 1:
-				hud.toast("Someone's already driving the " + String(nearest.machine_name).to_lower(), Hud.BAD)
+				var nid := int(nearest.get_meta("net_id"))
+				if nearest.get("passenger_seat") and net.rider_of(nid) == 0:
+					net.set_rider(1, nid)
+					_start_riding(nearest)
+				else:
+					hud.toast("Someone's already driving the " + String(nearest.machine_name).to_lower(), Hud.BAD)
 			else:
 				_enter_machine(nearest)
 	var driver_name := ""
@@ -1834,6 +2049,14 @@ func _process(delta: float) -> void:
 			_winch_control(_driving, Input.is_action_pressed("winch"), _winch_states.get(1, {}), 1)
 		if Input.is_action_just_pressed("utility"):
 			_press_utility()
+		if _driving is Helicopter and Input.is_action_pressed("fire") and not menu.is_open:
+			_fire_cooldown -= get_process_delta_time()
+			if _fire_cooldown <= 0.0:
+				_fire_cooldown = Helicopter.FIRE_EVERY
+				if net.is_client():
+					net.request("fire", 0)
+				else:
+					_driving.fire()
 		if not net.is_client():
 			player.set_controls(_driving.controls())
 		player.set_body_visible(not camera.cab_view)
@@ -1845,7 +2068,11 @@ func _process(delta: float) -> void:
 		else:
 			hud.set_prompt("interact", "RAISE THE RAMPS" if at_ramps.ramps_down else "LOWER THE RAMPS")
 	elif nearest and driver_name != "":
-		hud.set_prompt("", String(driver_name).to_upper() + " IS DRIVING THE " + String(nearest.machine_name).to_upper())
+		var free_seat: bool = nearest.get("passenger_seat") != null and net.rider_of(int(nearest.get_meta("net_id"))) == 0
+		if free_seat:
+			hud.set_prompt("interact", "RIDE ALONG  ·  " + String(driver_name).to_upper() + " IS DRIVING")
+		else:
+			hud.set_prompt("", String(driver_name).to_upper() + " IS DRIVING THE " + String(nearest.machine_name).to_upper())
 	elif nearest:
 		hud.set_prompt("interact", ("DRIVE THE " if not nearest.get("broken") else "CLIMB INTO THE ") + String(nearest.machine_name).to_upper())
 	else:

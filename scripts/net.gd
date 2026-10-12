@@ -21,7 +21,7 @@ extends Node
 signal status_changed(text: String)
 signal players_changed
 
-const VERSION := "earthworks-net-11"  # bump whenever the messages change: mismatched games refuse politely
+const VERSION := "earthworks-net-13"  # bump whenever the messages change: mismatched games refuse politely
 const DEFAULT_PORT := 24680
 const MAX_PLAYERS := 4095  # no real limit (ENet's ceiling); the host's upload is what runs out
 const STATE_INTERVAL := 0.05  # 20 updates a second
@@ -31,8 +31,8 @@ const JOBS_INTERVAL := 0.5
 const BODIES_PER_PACKET := 32  # 32 x 32 bytes: fits one network packet
 const MAX_REQUESTS_PER_SECOND := 20
 const INPUT_ACTIONS := ["drive_forward", "drive_back", "turn_left", "turn_right", "swing_left", "swing_right",
-	"boom_up", "boom_down", "stick_out", "stick_in", "bucket_curl", "bucket_dump", "handbrake"]
-const REQUESTS := ["enter", "exit", "utility", "ramps", "reset", "buy", "deliver", "take_job", "abandon_job", "return", "supply", "tie", "cut_tie", "tune", "detonate"]
+	"boom_up", "boom_down", "stick_out", "stick_in", "bucket_curl", "bucket_dump", "handbrake", "sprint"]
+const REQUESTS := ["enter", "exit", "utility", "ramps", "reset", "buy", "deliver", "take_job", "abandon_job", "return", "supply", "tie", "cut_tie", "tune", "detonate", "fire"]
 const Player = preload("res://scripts/player.gd")
 const Lobby = preload("res://scripts/lobby.gd")
 ## Free public STUN servers: they tell each player its public address, for the direct link.
@@ -51,7 +51,8 @@ static var pending := {}
 var main: Node3D
 var role := "solo"  # solo, host, client
 var my_name := "Player"
-## peer id -> {name, color, driving (vehicle id, -1 on foot)}
+## peer id -> {name, color, driving (vehicle id, -1 on foot), riding (vehicle id they're a
+## passenger in, -1 if not)}
 var players := {}
 
 var _password := ""
@@ -172,7 +173,7 @@ func _begin_hosting(peer: MultiplayerPeer, password: String, player_name: String
 	_setup_auth()
 	multiplayer.multiplayer_peer = peer
 	role = "host"
-	players = {1: {"name": my_name, "color": 0, "driving": -1}}
+	players = {1: {"name": my_name, "color": 0, "driving": -1, "riding": -1}}
 	main.terrain.net_record = true
 	players_changed.emit()
 
@@ -479,7 +480,7 @@ func _on_peer_connected(id: int) -> void:
 	var color := 0
 	while color in used:
 		color += 1
-	players[id] = {"name": _joining_names.get(id, "Player"), "color": color, "driving": -1}
+	players[id] = {"name": _joining_names.get(id, "Player"), "color": color, "driving": -1, "riding": -1}
 	_joining_names.erase(id)
 	_send_snapshot(id)
 	_broadcast_players()
@@ -536,10 +537,10 @@ func _host_tick(delta: float) -> void:
 	_state_timer -= delta
 	if _state_timer <= 0.0:
 		_state_timer = STATE_INTERVAL
-		var people := [[1, main.player.net_state(), players[1].driving]]
+		var people := [[1, main.player.net_state(), players[1].driving, int(players[1].get("riding", -1))]]
 		for peer in players:
 			if peer != 1 and _puppets.has(peer):
-				people.append([peer, _puppets[peer].net_state(), players[peer].driving])
+				people.append([peer, _puppets[peer].net_state(), players[peer].driving, int(players[peer].get("riding", -1))])
 		# A few machines per packet, so each stays under the network's packet size.
 		var vehicles := []
 		for v in main.machines + main.trailers:
@@ -700,6 +701,16 @@ func send_removed(ids: Array) -> void:
 		rpc("_rx_removed", PackedInt32Array(ids))
 
 
+func send_rocket(from: Vector3, velocity: Vector3, shooter_id: int) -> void:
+	if role == "host":
+		rpc("_rx_rocket", from, velocity, shooter_id)
+
+
+func send_wreck(vehicle_id: int) -> void:
+	if role == "host":
+		rpc("_rx_wreck", vehicle_id)
+
+
 func send_charges(list: Array) -> void:
 	if role == "host":
 		rpc("_rx_charges", list)
@@ -749,6 +760,23 @@ func set_driver(peer: int, vehicle_id: int) -> void:
 			else:
 				rpc_id(peer, "_rx_exited")
 		_broadcast_players()
+
+
+## The host's answer to "can I ride along?": who's a passenger in what.
+func set_rider(peer: int, vehicle_id: int) -> void:
+	if players.has(peer):
+		players[peer].riding = vehicle_id
+	if role == "host":
+		if peer != 1 and peer in multiplayer.get_peers():
+			rpc_id(peer, "_rx_riding", vehicle_id)
+		_broadcast_players()
+
+
+func rider_of(vehicle_id: int) -> int:
+	for peer in players:
+		if int(players[peer].get("riding", -1)) == vehicle_id:
+			return peer
+	return 0
 
 
 func driver_of(vehicle_id: int) -> int:
@@ -939,7 +967,7 @@ func _rx_state(vehicles: Array, people: Array) -> void:
 			continue
 		var puppet := _puppet_for(peer)
 		puppet.apply_net_state(entry[1])
-		_seat_puppet(puppet, int(entry[2]))
+		_seat_puppet(puppet, int(entry[2]), int(entry[3]) if entry.size() > 3 else -1)
 
 
 @rpc("authority", "call_remote", "unreliable_ordered", 2)
@@ -1053,6 +1081,18 @@ func _rx_removed(ids: PackedInt32Array) -> void:
 
 
 @rpc("authority", "call_remote", "reliable")
+func _rx_rocket(from: Vector3, velocity: Vector3, shooter_id: int) -> void:
+	if _from_host() and from.is_finite() and velocity.is_finite():
+		main.net_rocket(from, velocity, shooter_id)
+
+
+@rpc("authority", "call_remote", "reliable")
+func _rx_wreck(vehicle_id: int) -> void:
+	if _from_host():
+		main.wreck_vehicle(main.vehicle_by_id(vehicle_id))
+
+
+@rpc("authority", "call_remote", "reliable")
 func _rx_charges(list: Array) -> void:
 	if _from_host() and list.size() <= 64:
 		main.net_charges(list.filter(func(c): return c is Vector3))
@@ -1091,6 +1131,12 @@ func _rx_entered(vehicle_id: int) -> void:
 
 
 @rpc("authority", "call_remote", "reliable")
+func _rx_riding(vehicle_id: int) -> void:
+	if _from_host():
+		main.client_ride(main.vehicle_by_id(vehicle_id) if vehicle_id >= 0 else null)
+
+
+@rpc("authority", "call_remote", "reliable")
 func _rx_exited() -> void:
 	if _from_host():
 		main.client_exit()
@@ -1115,17 +1161,20 @@ func _puppet_for(peer: int) -> Node3D:
 	return _puppets[peer]
 
 
-## Seats another player's worker in the machine they're driving (or stands them up).
-func _seat_puppet(puppet: Node3D, vehicle_id: int) -> void:
-	var seated: int = puppet.get_meta("seated", -1)
-	if seated == vehicle_id:
+## Seats another player's worker in the machine they're driving, or beside its driver if
+## they're riding along (or stands them up).
+func _seat_puppet(puppet: Node3D, vehicle_id: int, riding := -1) -> void:
+	var where := "d%d" % vehicle_id if vehicle_id >= 0 else ("r%d" % riding if riding >= 0 else "")
+	if String(puppet.get_meta("seated", "")) == where:
 		return
-	puppet.set_meta("seated", vehicle_id)
-	if vehicle_id >= 0:
-		var v: Node3D = main.vehicle_by_id(vehicle_id)
-		if v:
-			puppet.set_active(false)
-			puppet.sit(v.seat)
+	puppet.set_meta("seated", where)
+	var v: Node3D = main.vehicle_by_id(vehicle_id if vehicle_id >= 0 else riding) if where != "" else null
+	var seat: Node3D = null
+	if v:
+		seat = v.seat if vehicle_id >= 0 else v.get("passenger_seat")
+	if seat:
+		puppet.set_active(false)
+		puppet.sit(seat)
 	else:
 		puppet.stand()
 		puppet.set_active(true)
@@ -1137,7 +1186,7 @@ func _process(_delta: float) -> void:
 		return
 	for peer in _puppets:
 		if players.has(peer):
-			_seat_puppet(_puppets[peer], int(players[peer].driving))
+			_seat_puppet(_puppets[peer], int(players[peer].driving), int(players[peer].get("riding", -1)))
 
 
 func player_color(peer: int) -> Color:

@@ -55,6 +55,14 @@ cab view and climbing out.
   stumps into the striped infeed zone and they're shredded for cash. Swamp cypress logs pay about
   2.4× and giant oak about 3× an ordinary log ("prized log").
 
+## Saves
+New versions always load saves from older ones: the save records its ground grid, so a
+world made on a different map size or grid is brought onto the current one by world
+position, and machines a version no longer has are just skipped. The first time a new
+version opens an older save it keeps a copy of it in `backups/` (next to the save, in
+Godot's user folder). A save that can't be read is moved into `backups/` too, never
+written over.
+
 ## Updates
 Downloaded builds (v0.2.9 and later) update themselves. On start the game checks the newest GitHub
 release; if it's newer, it downloads that release's small data pack (`Earthworks-Windows.pck` /
@@ -171,6 +179,16 @@ shredder). Your fleet and where you're standing are saved with the world.
 - **Deep swamp mud:** mud in the swamps runs much deeper. Excavators and dozers can crawl through
   if they keep moving, but left standing they sink and get stuck fast; rock them on the tracks
   for a while or winch them out.
+- **Little Bird helicopter** ($60,000, model by RonTheRentalCop): arcade flight. W/S fly
+  forward/back, A/D turn, Q/E slide, Space or I (RT) climb, Shift or K (LT) descend, R (RB) fires
+  rockets that crater the ground and wreck vehicles. Passenger seat.
+- **Tracked F150** ($14,000, model by RonTheRentalCop): a pickup on four track pods that ride
+  the suspension and steer; huge grip in mud and snow; V for the driver's-eye cab view.
+- **Passenger seats:** in multiplayer, walk up to a truck (or the helicopter) someone is driving
+  and press F to ride along.
+- **Pause menu:** *Return to site* takes you back to the depot; in multiplayer the menus no longer
+  pause the game for everyone. The mouse pointer hides while you play on a controller.
+- The forge, portable shredder, rollers and conveyor can drive up onto trailers.
 - **Workshop** (pause menu, at the company depot): fit engines (stages 1-3), gearing (low for
   torque, high for speed), suspension (soft off-road, sport, heavy duty), tyres (road,
   all-terrain, mud tiers 1-3) and a locked differential to any site truck. You pay only for the

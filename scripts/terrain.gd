@@ -1753,6 +1753,57 @@ func net_pack_chunk(index: int) -> Array:
 	return [index, h, m, d, p, s]
 
 
+## Puts back a chunk saved by an older version on a different ground grid (the map was a
+## different size, or the grid finer): every vertex that had been dug, filled, rutted or
+## gravelled lands on the nearest vertex of this grid, at the same place in the world.
+## `old_cells` / `old_cell` describe the grid it was saved on.
+func import_foreign_chunk(data: Array, old_cells: int, old_cell: float) -> void:
+	if data.size() < 5 or data[1] is String:
+		return  # (the network's small format: not used for saves)
+	var index: int = data[0]
+	var old_chunks := old_cells / CHUNK_CELLS
+	var cx := index % old_chunks
+	var cz := index / old_chunks
+	var n := CHUNK_CELLS + 1
+	var old_half := old_cells * old_cell * 0.5
+	var h: PackedFloat32Array = data[1]
+	var m: PackedFloat32Array = data[2]
+	var d: PackedByteArray = data[3]
+	var p: PackedByteArray = data[4]
+	var s: PackedByteArray = data[5] if data.size() > 5 else PackedByteArray()
+	# The patch of this grid the old chunk covers.
+	var w0 := Vector2(cx * CHUNK_CELLS * old_cell - old_half, cz * CHUNK_CELLS * old_cell - old_half)
+	var span := CHUNK_CELLS * old_cell
+	var r := _world_rect(w0 + Vector2(span, span) * 0.5, Vector2(span, span) * 0.5 + Vector2.ONE * CELL_SIZE)
+	if r.size.x <= 0 or r.size.y <= 0:
+		return
+	_ensure(r)
+	var k := -1
+	for lz in n:
+		for lx in n:
+			k += 1
+			if k >= d.size() or d[k] == 0:
+				continue
+			var wx := (cx * CHUNK_CELLS + lx) * old_cell - old_half
+			var wz := (cz * CHUNK_CELLS + lz) * old_cell - old_half
+			var x := roundi((wx + HALF_SIZE) / CELL_SIZE)
+			var z := roundi((wz + HALF_SIZE) / CELL_SIZE)
+			if x < 0 or z < 0 or x > CELLS or z > CELLS:
+				continue
+			var i := z * VERTS + x
+			var height: float = h[k]
+			if absf(height - original[i]) > 25.0:
+				continue  # (the map there changed too much since: leave it be)
+			heights[i] = height
+			mud[i] = m[k]
+			disturbed[i] = 1
+			pressed[i] = p[k]
+			if not s.is_empty():
+				surface[i] = s[k]
+				gravel_layer[i] = 20 if s[k] == SURFACE_GRAVEL else 0
+	_mark_dirty(r)
+
+
 ## A chunk packed small for the network: each height as millimetres off the untouched
 ## ground (which every player generates identically, so unchanged ground is all zeros
 ## and compresses to almost nothing), mud in 1/255 steps, the flags as they are.

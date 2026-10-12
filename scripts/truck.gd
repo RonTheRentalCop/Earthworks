@@ -115,6 +115,21 @@ const KINDS := {
 		"capacity": 14.0, "bed_half": Vector2(1.35, 2.3), "bed_height": 1.5, "bed_pivot": Vector3(0, 2.05, 4.45),
 		"winch": [Vector3(0, 1.3, -4.75), 160000.0, 28.0], "hitch": Vector3(0, 1.05, 4.75), "com": 1.25,
 	},
+	"f150": {
+		# Tracked F150 (model by RonTheRentalCop): a pickup on four track pods. Hidden wheels
+		# under the pods carry it; the tracks give it huge grip in mud and snow.
+		"name": "Tracked F150", "paint": Color(0.2, 0.35, 0.7), "mass": 4200.0, "engine": 33000.0, "launch": 1.4,
+		"top": 18.0, "loaded_top": 18.0, "reverse": 6.0, "steer": 0.5, "grip": 3.6, "mud_grip": 3.3, "bog": 0.12,
+		"radius": 0.55, "width": 0.6, "wheel_y": 0.87, "rest": 0.32, "travel": 0.35,
+		"axles": [[-1.635, 1.445, true, true, false], [1.634, 1.275, false, true, false]],
+		"capacity": 0.0, "winch": [Vector3(0, 0.9, -2.9), 90000.0, 25.0], "hitch": Vector3(0, 0.75, 2.9), "com": 0.2,
+		"roll": 0.04,  # (wide track pods keep it planted; it shouldn't tip in a hard turn)
+		"model": "res://models/f150/body.obj", "hidden_wheels": true,
+		# Each track pod is its own mesh, centred on its wheel: it rides the suspension and
+		# the front pair steer.
+		# (in wheel order: the body's -X side is the model's right, the model being turned round)
+		"pods": ["res://models/f150/pod_rf.obj", "res://models/f150/pod_lf.obj", "res://models/f150/pod_rb.obj", "res://models/f150/pod_lb.obj"],
+	},
 	"pickup": {
 		"name": "Site pickup", "paint": Color(0.94, 0.94, 0.92), "mass": 2400.0, "engine": 9500.0,
 		"top": 24.0, "loaded_top": 24.0, "reverse": 7.0, "steer": 0.6, "grip": 2.7, "mud_grip": 1.0, "bog": 0.6,
@@ -154,6 +169,7 @@ var trailer: Node3D  # hitched trailer, if any
 var payload := 0.0
 ## Workshop setup: index into each of TUNE's option lists (see apply_tune()).
 var tune := {}
+var _pods: Array = []  # track pods that follow the wheels (same order as _wheels)
 var payload_value := 0.0  # $ of ore in the load (see ores.gd), and the gold part of it
 var payload_gold := 0.0
 ## What's in the body: Terrain.SURFACE_SOIL or Terrain.SURFACE_GRAVEL.
@@ -270,6 +286,17 @@ func apply_tune(t: Dictionary) -> void:
 		for child in w.get_children():
 			if child is Node3D:
 				(child as Node3D).scale = Vector3.ONE * (float(spec.radius) / float(stock.radius))
+
+
+## Track pods ride their wheels: up and down with the suspension, and the front ones steer.
+func _process(_delta: float) -> void:
+	if _pods.is_empty():
+		return
+	var body := get_global_transform_interpolated().basis
+	for k in mini(_pods.size(), _wheels.size()):
+		var w: VehicleWheel3D = _wheels[k]
+		var turn := Basis(Vector3.UP, PI + (steering if w.use_as_steering else 0.0))
+		(_pods[k] as Node3D).global_transform = Transform3D(body * turn, w.get_global_transform_interpolated().origin)
 
 
 func _ready() -> void:
@@ -868,6 +895,7 @@ func _update_heap() -> void:
 
 func _door() -> Vector3:
 	match kind:
+		"f150": return Vector3(-1.4, 0.0, -0.3)
 		"adt": return Vector3(-1.8, 0.0, -1.6)
 		"pickup": return Vector3(-1.35, 0.0, -0.3)
 	return Vector3(-1.6, 0.0, -2.4)
@@ -890,6 +918,8 @@ func _add_collisions() -> void:
 					[Vector3(2.9, 1.0, 5.0), Vector3(0, 2.0, 2.0)]]
 		"pickup":
 			boxes = [[Vector3(1.9, 0.6, 5.2), Vector3(0, 0.82, 0)], [Vector3(1.7, 0.7, 1.4), Vector3(0, 1.5, -0.25)]]
+		"f150":
+			boxes = [[Vector3(2.05, 1.0, 5.5), Vector3(0, 1.65, 0)], [Vector3(2.0, 0.85, 2.0), Vector3(0, 2.5, -0.35)]]
 		_:
 			boxes = [[Vector3(2.3, 0.9, 6.6), Vector3(0, 1.35, 0)], [Vector3(2.3, 1.5, 1.7), Vector3(0, 2.3, -2.5)]]
 	if kind == "log_semi":
@@ -926,7 +956,8 @@ func _add_wheel(pos: Vector3, steer: bool, drive: bool, dual: bool) -> void:
 	wheel.wheel_roll_influence = float(_spec.get("roll", 0.2))
 	add_child(wheel)
 	var rim := Color(0.88, 0.88, 0.88) if kind != "adt" else Color(0.95, 0.66, 0.08)
-	Kit.wheel(wheel, _spec.radius, _spec.width if not dual else float(_spec.width) * 0.7, rim, 1.0 if pos.x > 0.0 else -1.0, dual)
+	if not _spec.get("hidden_wheels", false):  # (track pods: the model shows them)
+		Kit.wheel(wheel, _spec.radius, _spec.width if not dual else float(_spec.width) * 0.7, rim, 1.0 if pos.x > 0.0 else -1.0, dual)
 	_wheels.append(wheel)
 
 
@@ -942,6 +973,18 @@ func _build_model() -> void:
 	match kind:
 		"adt":
 			_build_adt()
+		"f150":
+			var body := MeshInstance3D.new()
+			body.mesh = load(_spec.model)
+			_model.add_child(body)
+			for path in _spec.pods:
+				var pod := MeshInstance3D.new()
+				pod.mesh = load(path)
+				pod.top_level = true  # (placed on its wheel every frame)
+				add_child(pod)
+				_pods.append(pod)
+			# Driver's seat behind the wheel; the cab view is the driver's eyes.
+			_seat_and_eye(Vector3(-0.46, 1.25, -0.15), Vector3(-0.46, 2.32, -0.08), -0.06)
 		"pickup":
 			_build_pickup()
 		_:
@@ -962,7 +1005,14 @@ func _build_model() -> void:
 		_hoist.visible = false
 
 
+## The seat beside the driver's (a second player rides here).
+var passenger_seat: Node3D
+
+
 func _seat_and_eye(seat_pos: Vector3, eye_pos: Vector3, pitch: float) -> void:
+	passenger_seat = Node3D.new()
+	passenger_seat.position = Vector3(-seat_pos.x if absf(seat_pos.x) > 0.2 else 0.62, seat_pos.y, seat_pos.z)
+	_model.add_child(passenger_seat)
 	eye = Node3D.new()
 	eye.position = eye_pos
 	eye.rotation.x = pitch

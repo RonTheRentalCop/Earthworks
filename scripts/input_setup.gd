@@ -33,6 +33,7 @@ static func setup() -> void:
 	_add("winch", [KEY_H], [], [JOY_BUTTON_B])
 	_add("utility", [KEY_N, KEY_T], [], [JOY_BUTTON_LEFT_STICK])
 	_add("detonate", [KEY_B], [], [JOY_BUTTON_MISC1])
+	_add("fire", [KEY_R], [], [JOY_BUTTON_RIGHT_SHOULDER])
 	_add("handbrake", [KEY_SPACE], [], [JOY_BUTTON_A])
 	# Menus and utility
 	_add("menu", [KEY_TAB], [], [JOY_BUTTON_BACK])

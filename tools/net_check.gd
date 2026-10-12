@@ -86,12 +86,21 @@ func _host() -> void:
 	var truck = main.truck
 	var start: Vector3 = truck.global_position
 	var driven := false
+	var host_in := false
 	for i in 60 * 25:
 		await _frames(1)
-		if main.net.driver_of(int(truck.get_meta("net_id"))) > 1:
+		var driver: int = main.net.driver_of(int(truck.get_meta("net_id")))
+		if driver > 1:
 			driven = true
+		elif driven and not host_in and driver == 0:
+			# The client got out: the host drives now, so the client can ride along.
+			main.player.global_position = truck.door_position()
+			main._enter_machine(truck)
+			host_in = true
 		if main.net.players.size() < 2:
 			break
+	if host_in:
+		main._exit_machine()
 	print("[host] truck was driven by the client: %s, moved %.1f m" % [driven, truck.global_position.distance_to(start)])
 
 
@@ -152,6 +161,16 @@ func _client(bad: bool) -> void:
 	main.net.request("exit")
 	await _frames(30)
 	print("[client] out of the truck: %s" % (main.driving() == null))
+	# The host climbs in to drive: ride along in the passenger seat, then hop out.
+	await _frames(90)
+	main.player.global_position = truck.door_position()
+	await _frames(10)
+	main.net.request("enter", int(truck.get_meta("net_id")))
+	await _frames(60)
+	var riding: bool = main._riding == truck
+	main.net.request("exit")
+	await _frames(40)
+	print("[client] rode along in the passenger seat: %s, out again: %s" % [riding, main._riding == null])
 	# Rope the felled log to the truck (the host makes the tie; it shows up here).
 	var log: Node3D = null
 	for id in main.bodies:

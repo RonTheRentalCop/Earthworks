@@ -106,6 +106,17 @@ func setup(main_node: Node3D, career_node: Career) -> void:
 	career.money_changed.connect(func(_m: int, _c: int, _r: String) -> void: _refresh_money())
 
 
+## Playing on a controller hides the mouse pointer; moving the mouse brings it back. (Here
+## because the menu keeps running while the game is paused.)
+func _input(event: InputEvent) -> void:
+	var stick := event is InputEventJoypadButton or (event is InputEventJoypadMotion and absf((event as InputEventJoypadMotion).axis_value) > 0.4)
+	if stick and Input.mouse_mode == Input.MOUSE_MODE_VISIBLE:
+		Input.mouse_mode = Input.MOUSE_MODE_HIDDEN
+	elif Input.mouse_mode == Input.MOUSE_MODE_HIDDEN and (event is InputEventMouseButton
+			or (event is InputEventMouseMotion and (event as InputEventMouseMotion).relative.length() > 3.0)):
+		Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
+
+
 func open_depot(tab := -1) -> void:
 	if tab >= 0:
 		_tab = tab
@@ -129,6 +140,7 @@ func close() -> void:
 	is_open = false
 	_root.visible = false
 	get_tree().paused = false
+	main.hold_controls(false)
 	closed.emit()
 
 
@@ -137,7 +149,12 @@ func _show(screen: Control) -> void:
 	_root.visible = true
 	for s in [_depot, _pause, _controls, _multi, _workshop]:
 		s.visible = s == screen
-	get_tree().paused = true
+	# Alone the game pauses behind the menu; in a multiplayer game it carries on for
+	# everyone (your worker or machine just holds still while you're in the menu).
+	if main.net.is_online():
+		main.hold_controls(true)
+	else:
+		get_tree().paused = true
 	_refresh_money()
 
 
@@ -422,7 +439,9 @@ func _fill_pause() -> void:
 		items.append(["RESTART TO UPDATE  ·  v%s" % main.updater.ready_version, func() -> void:
 			main.save_world()
 			main.updater.restart()])
-	items += [["RESUME", close], ["DEPOT  ·  HIRE & JOBS", func() -> void: open_depot()],
+	items += [["RESUME", close], ["RETURN TO SITE  ·  back to the depot", func() -> void:
+			close()
+			main.return_to_site()], ["DEPOT  ·  HIRE & JOBS", func() -> void: open_depot()],
 			["MULTIPLAYER" + ("  ·  %d PLAYERS" % main.net.players.size() if main.net.is_online() else ""), open_multiplayer],
 			["WORKSHOP  ·  TUNE YOUR TRUCKS", open_workshop],
 			["CONTROLS", open_controls], ["GRAPHICS:  " + quality_name, _cycle_quality]]
@@ -443,7 +462,7 @@ func _fill_pause() -> void:
 		box.add_child(warn)
 	var stats: Dictionary = career.stats
 	box.add_child(_label("Earned $%s  ·  %d jobs  ·  %d logs shredded" % [_thousands(int(stats.earned)), int(stats.jobs), int(stats.logs)], 13, MUTED))
-	var credit := _label("Excavator model: \"Excavator\" by MD.Jobair Hossain (Sketchfab), CC-BY-4.0", 11, MUTED)
+	var credit := _label("Models: \"Little Bird with Rockets\" and \"Tracked F150\" by RonTheRentalCop (Roblox Studio); \"Excavator\" by MD.Jobair Hossain (Sketchfab, CC-BY-4.0)", 11, MUTED)
 	credit.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	box.add_child(credit)
 	_focus_first()
@@ -789,7 +808,7 @@ func _render_thumbnails() -> void:
 			"excavator_xl":
 				node = Excavator.new()
 				node.size_scale = 2.0
-			"dozer", "dozer_angle", "dozer_xl", "dozer_angle_xl", "dozer_carry", "conveyor", "roller", "roller_xl", "mobile_shredder", "forge":
+			"dozer", "dozer_angle", "dozer_xl", "dozer_angle_xl", "dozer_carry", "conveyor", "roller", "roller_xl", "mobile_shredder", "forge", "heli":
 				node = main._create_vehicle(kind)  # the same machine the game builds
 			"trailer":
 				node = Trailer.new()
@@ -822,7 +841,7 @@ func _render_thumbnails() -> void:
 		# Each family is framed from the same distance, so the big versions look big.
 		var reach: float = {"excavator": 22.0, "excavator_xl": 22.0, "trailer": 19.0, "log_trailer": 19.0, "flatbed": 24.0, "adt": 17.0, "pickup": 11.0,
 			"dozer": 26.0, "dozer_angle": 26.0, "dozer_xl": 26.0, "dozer_angle_xl": 26.0, "dozer_carry": 26.0,
-			"recovery": 19.0, "recovery_xl": 19.0, "conveyor": 34.0, "log_semi": 17.0, "roller": 14.0, "roller_xl": 20.0, "mobile_shredder": 17.0, "dump_xl": 20.0, "forge": 16.0}.get(kind, 14.5)
+			"recovery": 19.0, "recovery_xl": 19.0, "conveyor": 34.0, "log_semi": 17.0, "roller": 14.0, "roller_xl": 20.0, "mobile_shredder": 17.0, "dump_xl": 20.0, "forge": 16.0, "heli": 20.0, "f150": 14.0}.get(kind, 14.5)
 		var look := Vector3(0, 1.6 if kind != "pickup" else 0.9, 0)
 		cam.position = look + Vector3(-0.62, 0.34, -0.7).normalized() * reach
 		if kind in ["dozer", "dozer_angle", "dozer_xl", "dozer_angle_xl", "dozer_carry", "excavator", "excavator_xl"]:

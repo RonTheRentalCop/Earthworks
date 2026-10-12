@@ -6,6 +6,7 @@ extends CharacterBody3D
 ## excavator's magnet and sell them at a shredder or the ore crusher. Built facing -Z.
 
 const Kit = preload("res://scripts/model_kit.gd")
+const MachineFx = preload("res://scripts/machine_fx.gd")
 const Terrain = preload("res://scripts/terrain.gd")
 const Ores = preload("res://scripts/ores.gd")
 
@@ -90,6 +91,7 @@ func _physics_process(delta: float) -> void:
 	if puppet:
 		_puppet_step(delta)
 		return
+	MachineFx.ride_deck(self)
 	_drive(delta)
 	_follow_ground(delta, false)
 	_smelt(delta)
@@ -123,12 +125,13 @@ func _follow_ground(delta: float, instant: bool) -> void:
 	var fwd := -global_basis.z * TRACK_HALF.x
 	var side := global_basis.x * TRACK_HALF.y
 	var p := global_position
-	var fl := terrain.get_height((p + fwd - side).x, (p + fwd - side).z)
-	var fr := terrain.get_height((p + fwd + side).x, (p + fwd + side).z)
-	var bl := terrain.get_height((p - fwd - side).x, (p - fwd - side).z)
-	var br := terrain.get_height((p - fwd + side).x, (p - fwd + side).z)
+	MachineFx.check_deck(self, p)
+	var fl := MachineFx.support(self, terrain, (p + fwd - side))
+	var fr := MachineFx.support(self, terrain, (p + fwd + side))
+	var bl := MachineFx.support(self, terrain, (p - fwd - side))
+	var br := MachineFx.support(self, terrain, (p - fwd + side))
 	var t := 1.0 if instant else 1.0 - exp(-8.0 * delta)
-	global_position.y = lerpf(p.y, (fl + fr + bl + br) * 0.25 - MUD_SINK * terrain.mud_at(p.x, p.z), t)
+	global_position.y = lerpf(p.y, (fl + fr + bl + br) * 0.25 - (0.0 if MachineFx.on_deck(self) else MUD_SINK * terrain.mud_at(p.x, p.z)), t)
 	_visual.rotation.x = lerp_angle(_visual.rotation.x, atan2((fl + fr) - (bl + br), 4.0 * TRACK_HALF.x), t)
 	_visual.rotation.z = lerp_angle(_visual.rotation.z, atan2((fr + br) - (fl + bl), 4.0 * TRACK_HALF.y), t)
 

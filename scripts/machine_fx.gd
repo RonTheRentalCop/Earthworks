@@ -151,6 +151,44 @@ static func deck_below(node: Node3D, p: Vector3) -> Dictionary:
 	return {"height": (hit.position as Vector3).y, "body": hit.collider}
 
 
+## Height a machine rests on at `p`: the ground, or a trailer deck (or ramp) above it.
+static func support(node: Node3D, terrain: Node, p: Vector3) -> float:
+	var ground: float = terrain.get_height(p.x, p.z)
+	var deck := deck_below(node, p)
+	return maxf(ground, float(deck.height)) if not deck.is_empty() else ground
+
+
+## Notes which trailer (if any) is under the machine's middle, so ride_deck() can carry it.
+static func check_deck(node: Node3D, p: Vector3) -> void:
+	var body = deck_below(node, p).get("body")
+	if body != (node.get_meta("deck") if node.has_meta("deck") else null):
+		if body:
+			node.set_meta("deck", body)
+			node.set_meta("deck_last", (body as Node3D).global_transform)
+		elif node.has_meta("deck"):
+			node.remove_meta("deck")
+
+
+## True while the machine sits on a trailer (no mud sinking up there).
+static func on_deck(node: Node3D) -> bool:
+	return node.has_meta("deck") and is_instance_valid(node.get_meta("deck"))
+
+
+## Moves the machine with the trailer it's parked on (call before it drives).
+static func ride_deck(node: Node3D) -> void:
+	if not node.has_meta("deck"):
+		return
+	var body = node.get_meta("deck")
+	if not is_instance_valid(body):
+		node.remove_meta("deck")
+		return
+	var now: Transform3D = (body as Node3D).global_transform
+	var moved: Transform3D = now * (node.get_meta("deck_last") as Transform3D).affine_inverse()
+	node.global_position = moved * node.global_position
+	node.rotate_y(moved.basis.get_euler().y)
+	node.set_meta("deck_last", now)
+
+
 static func _world_particles(parent: Node3D, amount: int, lifetime: float, mesh: Mesh, process: ParticleProcessMaterial) -> GPUParticles3D:
 	var particles := GPUParticles3D.new()
 	particles.amount = amount

@@ -33,6 +33,8 @@ var camera: Camera3D
 ## The ground, to keep the worker on top of it (set by main).
 var terrain: Node3D
 var active := true
+## A menu is open in a multiplayer game (which doesn't pause): the worker stands still.
+var input_paused := false
 ## Multiplayer: another player's worker, moved by the network.
 var puppet := false
 var _net_pos := Vector3.ZERO
@@ -170,9 +172,9 @@ func _physics_process(delta: float) -> void:
 		return
 	if not active:
 		return
-	var input := Input.get_vector("turn_left", "turn_right", "drive_forward", "drive_back")
+	var input := Input.get_vector("turn_left", "turn_right", "drive_forward", "drive_back") if not input_paused else Vector2.ZERO
 	var dir := Vector3(input.x, 0.0, input.y).rotated(Vector3.UP, camera.global_rotation.y)
-	var running := Input.is_action_pressed("sprint")
+	var running := Input.is_action_pressed("sprint") and not input_paused
 	var wanted := dir * (RUN_SPEED if running else WALK_SPEED)
 	var flat := Vector3(velocity.x, 0.0, velocity.z)
 	var grounded := is_on_floor()
@@ -182,7 +184,7 @@ func _physics_process(delta: float) -> void:
 	velocity.x = flat.x
 	velocity.z = flat.z
 	_coyote = COYOTE_TIME if grounded else maxf(_coyote - delta, 0.0)
-	_jump_buffer = JUMP_BUFFER if Input.is_action_just_pressed("jump") else maxf(_jump_buffer - delta, 0.0)
+	_jump_buffer = JUMP_BUFFER if Input.is_action_just_pressed("jump") and not input_paused else maxf(_jump_buffer - delta, 0.0)
 	if _jump_buffer > 0.0 and _coyote > 0.0:
 		velocity.y = JUMP_VELOCITY
 		_jump_buffer = 0.0

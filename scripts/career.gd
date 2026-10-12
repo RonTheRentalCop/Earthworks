@@ -8,6 +8,7 @@ signal money_changed(money: int, change: int, reason: String)
 signal unlocked(id: String)
 
 const SAVE_PATH := "user://earthworks_save.cfg"
+const BACKUP_DIR := "user://backups/"
 const START_MONEY := 12000
 const MAX_FLEET := 14
 
@@ -39,6 +40,10 @@ const MACHINES := [
 		"blurb": "Tracked shredder: take it to the logs, feed it, get paid.", "stats": ["Infeed at the back", "Logs and stumps", "Pays on the spot"]},
 	{"id": "blaster", "name": "Explosives truck", "price": 28000, "kind": "blaster",
 		"blurb": "Drill holes, plant linked charges, blow rock apart.", "stats": ["Drill mast", "30 charges", "Blasts through rock"]},
+	{"id": "heli", "name": "Little Bird helicopter", "price": 60000, "kind": "heli",
+		"blurb": "Fly anywhere fast. Rocket pods blow craters and wreck vehicles.", "stats": ["150 km/h", "Rockets: R / RB", "Passenger seat"]},
+	{"id": "f150", "name": "Tracked F150", "price": 14000, "kind": "f150",
+		"blurb": "A pickup on four track pods: goes through deep mud and snow.", "stats": ["65 km/h", "Track pods", "Passenger seat"]},
 	{"id": "dump", "name": "Dump truck", "price": 0, "kind": "dump",
 		"blurb": "Hauls soil from the dig to the fill.", "stats": ["8 m³ body", "40 km/h", "Tow hitch"]},
 	{"id": "pickup", "name": "Site pickup", "price": 6500, "kind": "pickup",
@@ -103,8 +108,8 @@ func _ready() -> void:
 
 
 func _load_settings() -> void:
-	var cfg := ConfigFile.new()
-	if cfg.load(SAVE_PATH) != OK:
+	var cfg := _read_save()
+	if cfg == null:
 		return
 	quality = int(cfg.get_value("settings", "quality", quality))
 	player_name = String(cfg.get_value("settings", "name", player_name))
@@ -116,8 +121,9 @@ func _load_settings() -> void:
 
 ## Saves just the settings (works while playing in someone else's game too).
 func save_settings() -> void:
-	var cfg := ConfigFile.new()
-	cfg.load(SAVE_PATH)
+	var cfg := _read_save()
+	if cfg == null:
+		cfg = ConfigFile.new()
 	cfg.set_value("settings", "quality", quality)
 	cfg.set_value("settings", "name", player_name)
 	cfg.set_value("settings", "address", last_address)
@@ -217,13 +223,42 @@ func save_game() -> void:
 	cfg.set_value("settings", "port", last_port)
 	cfg.set_value("settings", "code", last_code)
 	cfg.set_value("settings", "tune_presets", tune_presets)
+	cfg.set_value("settings", "game", String(Engine.get_meta("game_version")) if Engine.has_meta("game_version") else String(ProjectSettings.get_setting("application/config/version", "0")))
 	cfg.save(SAVE_PATH)
 
 
-func load_game() -> void:
+## Reads the save, however it was written (a stray byte-order mark at the start, as some
+## editors add, doesn't stop it). A save that still can't be read is copied into backups
+## before anything new is written over it.
+func _read_save() -> ConfigFile:
+	if not FileAccess.file_exists(SAVE_PATH):
+		return null
 	var cfg := ConfigFile.new()
-	if cfg.load(SAVE_PATH) != OK:
+	if cfg.load(SAVE_PATH) == OK:
+		return cfg
+	var text := FileAccess.get_file_as_string(SAVE_PATH).trim_prefix(char(0xFEFF))
+	if cfg.parse(text) == OK:
+		return cfg
+	DirAccess.make_dir_recursive_absolute(BACKUP_DIR)
+	var stamp := Time.get_datetime_string_from_system().replace(":", "-")
+	DirAccess.copy_absolute(SAVE_PATH, BACKUP_DIR + "earthworks_save-unreadable-%s.cfg" % stamp)
+	return null
+
+
+func load_game() -> void:
+	var cfg := _read_save()
+	if cfg == null:
 		return
+	# Made by another version: keep a copy of it as it was.
+	var made_by := String(cfg.get_value("settings", "game", "old"))
+	var now := String(ProjectSettings.get_setting("application/config/version", "0"))
+	if Engine.has_meta("game_version"):
+		now = String(Engine.get_meta("game_version"))
+	if made_by != now:
+		DirAccess.make_dir_recursive_absolute(BACKUP_DIR)
+		var to := BACKUP_DIR + "earthworks_save-%s.cfg" % made_by.validate_filename()
+		if not FileAccess.file_exists(to):
+			DirAccess.copy_absolute(SAVE_PATH, to)
 	money = int(cfg.get_value("career", "money", START_MONEY))
 	for id in cfg.get_value("career", "owned", []):
 		owned[String(id)] = true

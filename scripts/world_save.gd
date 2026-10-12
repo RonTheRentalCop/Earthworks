@@ -9,6 +9,9 @@ const PATH := "user://earthworks_world.save"
 ## Where it's written (tests point this elsewhere so they never touch your save).
 static var path := PATH
 const VERSION := 3  # (3: the 1.5 km map)
+## Old saves are kept here (copied the first time a newer game opens them), and so is any
+## save that can't be read, so nothing is ever lost.
+const BACKUPS := "user://backups/"
 
 
 ## Writes the save (safely: to a temporary file first, then swapped in).
@@ -56,6 +59,8 @@ static func save(main: Node) -> bool:
 		"version": VERSION, "cells": terrain.CELLS, "trees": forests.count(),
 		"terrain": chunks, "tree_state": forests.state, "logs": logs, "debris": debris, "mats": mats, "ores": ores,
 		"vehicles": vehicles, "player": main.player.global_transform,
+		# (so later versions can always put this ground back, whatever their grid)
+		"cell_size": terrain.CELL_SIZE, "game": String(main.Updater.current()),
 	}
 	var raw := var_to_bytes(data)
 	var packed := raw.compress(FileAccess.COMPRESSION_ZSTD)
@@ -70,6 +75,21 @@ static func save(main: Node) -> bool:
 	if dir.file_exists(path.get_file()):
 		dir.remove(path.get_file())
 	return dir.rename(temp.get_file(), path.get_file()) == OK
+
+
+## Copies the save as it is into the backups folder (once per version it came from).
+static func keep_copy(label: String) -> void:
+	DirAccess.make_dir_recursive_absolute(BACKUPS)
+	var to := BACKUPS + "earthworks_world-%s.save" % label.validate_filename()
+	if not FileAccess.file_exists(to):
+		DirAccess.copy_absolute(path, to)
+
+
+## Moves a save that can't be read out of the way (into backups), so it's never overwritten.
+static func set_aside(reason: String) -> void:
+	DirAccess.make_dir_recursive_absolute(BACKUPS)
+	var stamp := Time.get_datetime_string_from_system().replace(":", "-")
+	DirAccess.rename_absolute(path, BACKUPS + "earthworks_world-%s-%s.save" % [reason, stamp])
 
 
 static func exists() -> bool:
@@ -95,15 +115,29 @@ static func restore(main: Node) -> bool:
 	file.close()
 	var raw := packed.decompress(size, FileAccess.COMPRESSION_ZSTD)
 	var data = bytes_to_var(raw) if raw.size() == size else null
-	if not data is Dictionary or int(data.get("version", 0)) != VERSION:
+	if not data is Dictionary or not data.has("terrain") or int(data.get("version", 0)) < 2:
+		set_aside("unreadable")
 		return false
 	var terrain = main.terrain
 	var forests = main.forests
-	if int(data.cells) != terrain.CELLS or int(data.trees) != forests.count():
-		return false  # made on a different map
+	# A save from another version: keep a copy of it as it was, then bring it in.
+	var made_by := String(data.get("game", "v%d" % int(data.get("version", 0))))
+	if made_by != String(main.Updater.current()):
+		keep_copy(made_by)
+	var old_cells := int(data.get("cells", terrain.CELLS))
+	var old_cell := float(data.get("cell_size", 0.25 if old_cells == 4096 else terrain.CELL_SIZE))
+	var same_grid: bool = old_cells == terrain.CELLS and is_equal_approx(old_cell, terrain.CELL_SIZE)
 	for entry in data.terrain:
 		var chunk = bytes_to_var((entry[1] as PackedByteArray).decompress(int(entry[0]), FileAccess.COMPRESSION_ZSTD))
 		if not chunk is Array:
+			continue
+		if not same_grid:
+			# Made on another map size or grid: put it back by world position.
+			terrain.import_foreign_chunk(chunk, old_cells, old_cell)
+			var span: float = float(terrain.CHUNK_CELLS) * old_cell
+			var old_chunks: int = old_cells / terrain.CHUNK_CELLS
+			var c := Vector2((int(chunk[0]) % old_chunks) * span, (int(chunk[0]) / old_chunks) * span) - Vector2.ONE * old_cells * old_cell * 0.5
+			terrain.area_changed.emit(Rect2(c, Vector2(span, span)))
 			continue
 		if not terrain.net_apply_chunk(chunk):
 			continue  # far off: goes in when that ground is first generated
@@ -119,7 +153,8 @@ static func restore(main: Node) -> bool:
 		lying["%d/%s" % [int(entry[0]), entry[1]]] = entry[2]
 	var saved_state: PackedByteArray = data.tree_state
 	var dirty_cells := {}
-	for tid in saved_state.size():
+	# (New forests are only ever added after the old ones, so a tree's number stays the same.)
+	for tid in mini(saved_state.size(), forests.count()):
 		var s := int(saved_state[tid])
 		if s == 0 or forests.state[tid] != 0:
 			continue

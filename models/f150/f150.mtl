@@ -1,0 +1,770 @@
+newmtl Chassis0251Mtl
+Material Color
+Ka 0 0 0
+Kd 0 0 0
+Ks 0 0 0 
+
+d 1
+
+Ns 0
+
+map_Ka Chassis0251_diff.png
+map_Kd Chassis0251_diff.png
+map_d Chassis0251_diff.png
+
+rbx_doublesided 1
+
+newmtl Newgameobjectmaterialstandartinstance0501Mtl
+Material Color
+Ka 0.618686 0.618686 0.618686
+Kd 0.618686 0.618686 0.618686
+Ks 0.412457 0.412457 0.412457 
+
+d 1
+
+Ns 255
+
+map_Ka Newgameobjectmaterialstandartinstance01031_diff.png
+map_Kd Newgameobjectmaterialstandartinstance01031_diff.png
+map_d Newgameobjectmaterialstandartinstance01031_diff.png
+
+map_Bump Newgameobjectmaterialstandartinstance01031_nmap.png
+
+map_Ns Newgameobjectmaterialstandartinstance01031_spec.png
+
+newmtl Tablero0081Mtl
+Material Color
+Ka 0.373615 0.368591 0.383775
+Kd 0.373615 0.368591 0.383775
+Ks 0.0322335 0.0318 0.03311 
+
+d 1
+
+Ns 255
+
+map_Ka Tablero0081_diff.png
+map_Kd Tablero0081_diff.png
+map_d Tablero0081_diff.png
+
+rbx_doublesided 1
+
+rbx_alphamode transparent
+
+newmtl Newgameobjectmaterialstandartinstance01031Mtl
+Material Color
+Ka 0.373615 0.368591 0.383775
+Kd 0.373615 0.368591 0.383775
+Ks 0.249077 0.245727 0.25585 
+
+d 1
+
+Ns 255
+
+map_Ka Newgameobjectmaterialstandartinstance01031_diff.png
+map_Kd Newgameobjectmaterialstandartinstance01031_diff.png
+map_d Newgameobjectmaterialstandartinstance01031_diff.png
+
+map_Bump Newgameobjectmaterialstandartinstance01031_nmap.png
+
+map_Ns Newgameobjectmaterialstandartinstance01031_spec.png
+
+newmtl Newgameobjectmaterialstandartinstance0521Mtl
+Material Color
+Ka 0.000638183 0.254916 0.632043
+Kd 0.000638183 0.254916 0.632043
+Ks 0.000425455 0.169944 0.421362 
+
+d 1
+
+Ns 255
+
+map_Ka Newgameobjectmaterialstandartinstance01031_diff.png
+map_Kd Newgameobjectmaterialstandartinstance01031_diff.png
+map_d Newgameobjectmaterialstandartinstance01031_diff.png
+
+map_Bump Newgameobjectmaterialstandartinstance01031_nmap.png
+
+map_Ns Newgameobjectmaterialstandartinstance01031_spec.png
+
+newmtl Running1Mtl
+Material Color
+Ka 0.373615 0.368591 0.383775
+Kd 0.373615 0.368591 0.383775
+Ks 0.0732579 0.0722727 0.0752499 
+
+d 1
+
+Ns 255
+
+map_Ka Running1_diff.png
+map_Kd Running1_diff.png
+map_d Running1_diff.png
+
+rbx_doublesided 1
+
+newmtl Paint9Mtl
+Material Color
+Ka 0.940601 0.940601 0.940601
+Kd 0.940601 0.940601 0.940601
+Ks 0.0811499 0.0811499 0.0811499 
+
+d 1
+
+Ns 255
+
+map_Ka Paint3_diff.png
+map_Kd Paint3_diff.png
+map_d Paint3_diff.png
+
+map_Ns Paint1_spec.png
+
+
+rbx_doublesided 1
+
+rbx_alphamode overlay
+
+newmtl Steeringok0061Mtl
+Material Color
+Ka 0.373615 0.368591 0.383775
+Kd 0.373615 0.368591 0.383775
+Ks 0.0732579 0.0722727 0.0752499 
+
+d 1
+
+Ns 255
+
+map_Ka Tablero0071_diff.png
+map_Kd Tablero0071_diff.png
+map_d Tablero0071_diff.png
+
+rbx_doublesided 1
+
+newmtl Newgameobjectmaterialstandartinstance0351Mtl
+Material Color
+Ka 0.00258583 0.00258583 0.00258583
+Kd 0.00258583 0.00258583 0.00258583
+Ks 0.000172388 0.000172388 0.000172388 
+
+d 1
+
+Ns 47
+
+map_Ka Newgameobjectmaterialstandartinstance0351_diff.png
+map_Kd Newgameobjectmaterialstandartinstance0351_diff.png
+map_d Newgameobjectmaterialstandartinstance0351_diff.png
+
+map_Bump Newgameobjectmaterialstandartinstance0351_nmap.png
+
+map_Ns Newgameobjectmaterialstandartinstance0351_spec.png
+
+newmtl Paint3Mtl
+Material Color
+Ka 0.940601 0.940601 0.940601
+Kd 0.940601 0.940601 0.940601
+Ks 0.0811499 0.0811499 0.0811499 
+
+d 1
+
+Ns 255
+
+map_Ka Paint3_diff.png
+map_Kd Paint3_diff.png
+map_d Paint3_diff.png
+
+map_Ns Paint1_spec.png
+
+
+rbx_doublesided 1
+
+rbx_alphamode overlay
+
+newmtl Newgameobjectmaterialstandartinstance0861Mtl
+Material Color
+Ka 1 0.0986892 0.0986892
+Kd 1 0.0986892 0.0986892
+Ks 0.666667 0.0657928 0.0657928 
+
+d 1
+
+Ns 255
+
+map_Ka Newgameobjectmaterialstandartinstance01031_diff.png
+map_Kd Newgameobjectmaterialstandartinstance01031_diff.png
+map_d Newgameobjectmaterialstandartinstance01031_diff.png
+
+map_Bump Newgameobjectmaterialstandartinstance01031_nmap.png
+
+map_Ns Newgameobjectmaterialstandartinstance01031_spec.png
+
+newmtl Windscreenok0161Mtl
+Material Color
+Ka 0.00258583 0.00258583 0.00258583
+Kd 0.00258583 0.00258583 0.00258583
+Ks 0.00102419 0.00102419 0.00102419 
+
+d 0.152941
+
+Ns 0
+
+map_Ka Windscreenok0161_diff.png
+map_Kd Windscreenok0161_diff.png
+map_d Windscreenok0161_diff.png
+
+map_Bump Windscreenok0161_nmap.png
+
+rbx_doublesided 1
+
+newmtl Windscreenok0031Mtl
+Material Color
+Ka 0.373615 0.368591 0.383775
+Kd 0.373615 0.368591 0.383775
+Ks 0.147981 0.145991 0.152005 
+
+d 1
+
+Ns 0
+
+map_Ka Windscreenok0031_diff.png
+map_Kd Windscreenok0031_diff.png
+map_d Windscreenok0031_diff.png
+
+rbx_doublesided 1
+
+newmtl Exhaustok1Mtl
+Material Color
+Ka 0.373615 0.368591 0.383775
+Kd 0.373615 0.368591 0.383775
+Ks 0.0732579 0.0722727 0.0752499 
+
+d 1
+
+Ns 255
+
+map_Ka Detalles0011_diff.png
+map_Kd Detalles0011_diff.png
+map_d Detalles0011_diff.png
+
+rbx_doublesided 1
+
+newmtl Tablero4501Mtl
+Material Color
+Ka 0.373615 0.368591 0.383775
+Kd 0.373615 0.368591 0.383775
+Ks 0.0102561 0.0101182 0.010535 
+
+d 1
+
+Ns 0
+
+map_Ka Tablero4501_diff.png
+map_Kd Tablero4501_diff.png
+map_d Tablero4501_diff.png
+
+rbx_doublesided 1
+
+newmtl Faros0301Mtl
+Material Color
+Ka 0.373615 0.368591 0.383775
+Kd 0.373615 0.368591 0.383775
+Ks 0.0732579 0.0722727 0.0752499 
+
+d 1
+
+Ns 255
+
+map_Ka Tablero1_diff.png
+map_Kd Tablero1_diff.png
+map_d Tablero1_diff.png
+
+rbx_doublesided 1
+
+newmtl Tablero0041Mtl
+Material Color
+Ka 0.373615 0.368591 0.383775
+Kd 0.373615 0.368591 0.383775
+Ks 0.0102561 0.0101182 0.010535 
+
+d 1
+
+Ns 0
+
+map_Ka Tablero0041_diff.png
+map_Kd Tablero0041_diff.png
+map_d Tablero0041_diff.png
+
+rbx_doublesided 1
+
+newmtl Tablero0071Mtl
+Material Color
+Ka 0.373615 0.368591 0.383775
+Kd 0.373615 0.368591 0.383775
+Ks 0.0102561 0.0101182 0.010535 
+
+d 1
+
+Ns 0
+
+map_Ka Tablero0071_diff.png
+map_Kd Tablero0071_diff.png
+map_d Tablero0071_diff.png
+
+rbx_doublesided 1
+
+newmtl Tablero0271Mtl
+Material Color
+Ka 0.373615 0.368591 0.383775
+Kd 0.373615 0.368591 0.383775
+Ks 0.0732579 0.0722727 0.0752499 
+
+d 1
+
+Ns 255
+
+map_Ka Tablero0271_diff.png
+map_Kd Tablero0271_diff.png
+map_d Tablero0271_diff.png
+
+rbx_doublesided 1
+
+newmtl Tablero0091Mtl
+Material Color
+Ka 0.373615 0.368591 0.383775
+Kd 0.373615 0.368591 0.383775
+Ks 0.0732579 0.0722727 0.0752499 
+
+d 1
+
+Ns 255
+
+map_Ka Tablero0091_diff.png
+map_Kd Tablero0091_diff.png
+map_d Tablero0091_diff.png
+
+rbx_doublesided 1
+
+newmtl Tablero0061Mtl
+Material Color
+Ka 0.373615 0.368591 0.383775
+Kd 0.373615 0.368591 0.383775
+Ks 0.0102561 0.0101182 0.010535 
+
+d 1
+
+Ns 0
+
+map_Ka Tablero0061_diff.png
+map_Kd Tablero0061_diff.png
+map_d Tablero0061_diff.png
+
+rbx_doublesided 1
+
+newmtl Tablero0051Mtl
+Material Color
+Ka 0.373615 0.368591 0.383775
+Kd 0.373615 0.368591 0.383775
+Ks 0.0102561 0.0101182 0.010535 
+
+d 1
+
+Ns 0
+
+map_Ka Tablero0051_diff.png
+map_Kd Tablero0051_diff.png
+map_d Tablero0051_diff.png
+
+rbx_doublesided 1
+
+newmtl Tablero1Mtl
+Material Color
+Ka 0.373615 0.368591 0.383775
+Kd 0.373615 0.368591 0.383775
+Ks 0.0102561 0.0101182 0.010535 
+
+d 1
+
+Ns 0
+
+map_Ka Tablero1_diff.png
+map_Kd Tablero1_diff.png
+map_d Tablero1_diff.png
+
+rbx_doublesided 1
+
+newmtl Paint10Mtl
+Material Color
+Ka 0.940601 0.940601 0.940601
+Kd 0.940601 0.940601 0.940601
+Ks 0.0811499 0.0811499 0.0811499 
+
+d 1
+
+Ns 255
+
+map_Ka Paint3_diff.png
+map_Kd Paint3_diff.png
+map_d Paint3_diff.png
+
+map_Ns Paint1_spec.png
+
+
+rbx_doublesided 1
+
+rbx_alphamode overlay
+
+newmtl Detalles0011Mtl
+Material Color
+Ka 0.373615 0.368591 0.383775
+Kd 0.373615 0.368591 0.383775
+Ks 0.0102561 0.0101182 0.010535 
+
+d 1
+
+Ns 0
+
+map_Ka Detalles0011_diff.png
+map_Kd Detalles0011_diff.png
+map_d Detalles0011_diff.png
+
+rbx_doublesided 1
+
+newmtl InteriorSymbols0021Mtl
+Material Color
+Ka 0.373615 0.368591 0.383775
+Kd 0.373615 0.368591 0.383775
+Ks 0.0732579 0.0722727 0.0752499 
+
+d 1
+
+Ns 255
+
+map_Ka InteriorSymbols0021_diff.png
+map_Kd InteriorSymbols0021_diff.png
+map_d InteriorSymbols0021_diff.png
+
+rbx_doublesided 1
+
+newmtl Glass0031Mtl
+Material Color
+Ka 0.373615 0.368591 0.383775
+Kd 0.373615 0.368591 0.383775
+Ks 0.0732579 0.0722727 0.0752499 
+
+d 0.501961
+
+Ns 255
+
+map_Ka Tablero1_diff.png
+map_Kd Tablero1_diff.png
+map_d Tablero1_diff.png
+
+rbx_doublesided 1
+
+newmtl Detalles0051Mtl
+Material Color
+Ka 0.373615 0.368591 0.383775
+Kd 0.373615 0.368591 0.383775
+Ks 0.0322335 0.0318 0.03311 
+
+d 1
+
+Ns 255
+
+map_Ka Detalles0051_diff.png
+map_Kd Detalles0051_diff.png
+map_d Detalles0051_diff.png
+
+rbx_doublesided 1
+
+rbx_alphamode transparent
+
+newmtl Chassis1401Mtl
+Material Color
+Ka 0.373615 0.368591 0.383775
+Kd 0.373615 0.368591 0.383775
+Ks 0.0732579 0.0722727 0.0752499 
+
+d 1
+
+Ns 255
+
+map_Ka Tablero0051_diff.png
+map_Kd Tablero0051_diff.png
+map_d Tablero0051_diff.png
+
+rbx_doublesided 1
+
+newmtl Chassis0091Mtl
+Material Color
+Ka 0.373615 0.368591 0.383775
+Kd 0.373615 0.368591 0.383775
+Ks 0.0732579 0.0722727 0.0752499 
+
+d 1
+
+Ns 255
+
+map_Ka Chassis0091_diff.png
+map_Kd Chassis0091_diff.png
+map_d Chassis0091_diff.png
+
+rbx_doublesided 1
+
+newmtl Paint8Mtl
+Material Color
+Ka 0.940601 0.940601 0.940601
+Kd 0.940601 0.940601 0.940601
+Ks 0.0811499 0.0811499 0.0811499 
+
+d 1
+
+Ns 255
+
+map_Ka Paint3_diff.png
+map_Kd Paint3_diff.png
+map_d Paint3_diff.png
+
+map_Ns Paint1_spec.png
+
+
+rbx_doublesided 1
+
+rbx_alphamode overlay
+
+newmtl Speedook0011Mtl
+Material Color
+Ka 0.373615 0.368591 0.383775
+Kd 0.373615 0.368591 0.383775
+Ks 0.0732579 0.0722727 0.0752499 
+
+d 1
+
+Ns 255
+
+map_Ka Tablero4501_diff.png
+map_Kd Tablero4501_diff.png
+map_d Tablero4501_diff.png
+
+rbx_doublesided 1
+
+newmtl Chassis0041Mtl
+Material Color
+Ka 0.373615 0.368591 0.383775
+Kd 0.373615 0.368591 0.383775
+Ks 0.147981 0.145991 0.152005 
+
+d 1
+
+Ns 0
+
+map_Ka Windscreenok0161_diff.png
+map_Kd Windscreenok0161_diff.png
+map_d Windscreenok0161_diff.png
+
+map_Bump Windscreenok0161_nmap.png
+
+rbx_doublesided 1
+
+newmtl Chassis1Mtl
+Material Color
+Ka 0.373615 0.368591 0.383775
+Kd 0.373615 0.368591 0.383775
+Ks 0.0102561 0.0101182 0.010535 
+
+d 1
+
+Ns 0
+
+map_Ka Chassis1_diff.png
+map_Kd Chassis1_diff.png
+map_d Chassis1_diff.png
+
+rbx_doublesided 1
+
+newmtl Paint1Mtl
+Material Color
+Ka 0.940601 0.940601 0.940601
+Kd 0.940601 0.940601 0.940601
+Ks 0.0811499 0.0811499 0.0811499 
+
+d 1
+
+Ns 255
+
+map_Ns Paint1_spec.png
+
+
+rbx_doublesided 1
+
+rbx_alphamode overlay
+
+newmtl Paint5Mtl
+Material Color
+Ka 0.00258583 0.00258583 0.00258583
+Kd 0.00258583 0.00258583 0.00258583
+Ks 7.09834e-05 7.09834e-05 7.09834e-05 
+
+d 1
+
+Ns 0
+
+map_Ka InteriorSymbols0021_diff.png
+map_Kd InteriorSymbols0021_diff.png
+map_d InteriorSymbols0021_diff.png
+
+rbx_doublesided 1
+
+newmtl Paint2Mtl
+Material Color
+Ka 0.940601 0.940601 0.940601
+Kd 0.940601 0.940601 0.940601
+Ks 0.0811499 0.0811499 0.0811499 
+
+d 1
+
+Ns 255
+
+map_Ns Paint1_spec.png
+
+
+rbx_doublesided 1
+
+rbx_alphamode overlay
+
+newmtl Bumprearok0041Mtl
+Material Color
+Ka 0.373615 0.368591 0.383775
+Kd 0.373615 0.368591 0.383775
+Ks 0.0234425 0.0231273 0.02408 
+
+d 1
+
+Ns 0
+
+map_Ka Tablero4501_diff.png
+map_Kd Tablero4501_diff.png
+map_d Tablero4501_diff.png
+
+rbx_doublesided 1
+
+newmtl Paint4Mtl
+Material Color
+Ka 0.940601 0.940601 0.940601
+Kd 0.940601 0.940601 0.940601
+Ks 0.0811499 0.0811499 0.0811499 
+
+d 1
+
+Ns 255
+
+map_Ns Paint1_spec.png
+
+
+rbx_doublesided 1
+
+rbx_alphamode overlay
+
+newmtl Doorrfok0071Mtl
+Material Color
+Ka 0.373615 0.368591 0.383775
+Kd 0.373615 0.368591 0.383775
+Ks 0.0732579 0.0722727 0.0752499 
+
+d 1
+
+Ns 255
+
+map_Ka Tablero0041_diff.png
+map_Kd Tablero0041_diff.png
+map_d Tablero0041_diff.png
+
+rbx_doublesided 1
+
+newmtl Paint6Mtl
+Material Color
+Ka 0.940601 0.940601 0.940601
+Kd 0.940601 0.940601 0.940601
+Ks 0.0811499 0.0811499 0.0811499 
+
+d 1
+
+Ns 255
+
+map_Ka Paint3_diff.png
+map_Kd Paint3_diff.png
+map_d Paint3_diff.png
+
+map_Ns Paint1_spec.png
+
+
+rbx_doublesided 1
+
+rbx_alphamode overlay
+
+newmtl Paint7Mtl
+Material Color
+Ka 0.940601 0.940601 0.940601
+Kd 0.940601 0.940601 0.940601
+Ks 0.0811499 0.0811499 0.0811499 
+
+d 1
+
+Ns 255
+
+map_Ns Paint1_spec.png
+
+
+rbx_doublesided 1
+
+rbx_alphamode overlay
+
+newmtl Bootok0041Mtl
+Material Color
+Ka 0.373615 0.368591 0.383775
+Kd 0.373615 0.368591 0.383775
+Ks 0.0732579 0.0722727 0.0752499 
+
+d 1
+
+Ns 255
+
+map_Bump Bootok0041_nmap.png
+
+map_Ns Bootok0041_spec.png
+
+rbx_doublesided 1
+
+newmtl Newgameobjectmaterialstandartinstance01291Mtl
+Material Color
+Ka 0.74453 0.74453 0.737205
+Kd 0.74453 0.74453 0.737205
+Ks 0.496353 0.496353 0.49147 
+
+d 1
+
+Ns 255
+
+map_Ka Newgameobjectmaterialstandartinstance01031_diff.png
+map_Kd Newgameobjectmaterialstandartinstance01031_diff.png
+map_d Newgameobjectmaterialstandartinstance01031_diff.png
+
+map_Bump Newgameobjectmaterialstandartinstance01031_nmap.png
+
+map_Ns Newgameobjectmaterialstandartinstance01031_spec.png
+
+newmtl Newgameobjectmaterialstandartinstance01281Mtl
+Material Color
+Ka 1 0 0
+Kd 1 0 0
+Ks 0.666667 0 0 
+
+d 1
+
+Ns 255
+
+map_Ka Newgameobjectmaterialstandartinstance01031_diff.png
+map_Kd Newgameobjectmaterialstandartinstance01031_diff.png
+map_d Newgameobjectmaterialstandartinstance01031_diff.png
+
+map_Bump Newgameobjectmaterialstandartinstance01031_nmap.png
+
+map_Ns Newgameobjectmaterialstandartinstance01031_spec.png
